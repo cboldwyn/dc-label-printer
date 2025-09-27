@@ -1,9 +1,9 @@
 """
-Haven Cannabis Label Data Processor v1.0
-=========================================
+Haven Cannabis Label Data Processor v1.0 - Complete Rewrite
+============================================================
 
 A Streamlit application for processing CSV files and generating Zebra printer labels.
-Supports direct printing to Zebra ZD410/ZD621 printers via network or USB connection.
+Supports direct printing to Zebra ZD410/ZD621 printers via network connection.
 
 Author: Haven Cannabis
 Created: 2025
@@ -24,9 +24,11 @@ try:
     QR_AVAILABLE = True
 except ImportError:
     QR_AVAILABLE = False
-    st.error("QR code libraries not installed. Run: pip install qrcode[pil]")
 
-# Page configuration
+# =============================================================================
+# PAGE CONFIGURATION
+# =============================================================================
+
 st.set_page_config(
     page_title="Haven Cannabis - Label Data Processor",
     page_icon="🏷️",
@@ -37,14 +39,19 @@ st.set_page_config(
 st.title("🏷️ Label Data Processor v1.0")
 st.markdown("**Haven Cannabis** | Process CSV files for label printing with calculated quantities")
 
-# Session state initialization
+# =============================================================================
+# SESSION STATE MANAGEMENT
+# =============================================================================
+
 def initialize_session_state():
     """Initialize all session state variables"""
     session_vars = [
         'processed_data',
         'sales_order_data', 
         'products_data',
-        'packages_data'
+        'packages_data',
+        'case_labels_data',    # NEW: Label-ready case dataset
+        'bin_labels_data'      # NEW: Label-ready bin dataset
     ]
     
     for var in session_vars:
@@ -54,7 +61,174 @@ def initialize_session_state():
 initialize_session_state()
 
 # =============================================================================
-# FILE UPLOAD SECTION
+# LABEL-READY DATASET GENERATION
+# =============================================================================
+
+def create_case_labels_dataset(merged_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create a dataset where each row represents exactly one case label to print.
+    Handles partial cases when Package Qty doesn't divide evenly by Case Qty.
+    """
+    case_labels_data = []
+    
+    for _, row in merged_df.iterrows():
+        package_qty = safe_numeric(row.get('Package Quantity', 0))
+        case_qty = safe_numeric(row.get('Case Quantity', 0))
+        
+        if package_qty > 0 and case_qty > 0:
+            # Calculate individual case quantities (same logic as bins)
+            remaining = package_qty
+            label_number = 1
+            
+            while remaining > 0:
+                if remaining >= case_qty:
+                    # Full case
+                    actual_case_qty = case_qty
+                    remaining -= case_qty
+                else:
+                    # Partial case (remainder)
+                    actual_case_qty = remaining
+                    remaining = 0
+                
+                # Create a new row for this specific label
+                label_row = row.copy()
+                label_row['Actual Case Qty'] = actual_case_qty
+                label_row['Label Number'] = label_number
+                label_row['Label Type'] = 'Case'
+                
+                case_labels_data.append(label_row)
+                label_number += 1
+    
+    return pd.DataFrame(case_labels_data) if case_labels_data else pd.DataFrame()
+
+def create_bin_labels_dataset(merged_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create a dataset where each row represents exactly one bin label to print.
+    Handles partial bins when Package Qty doesn't divide evenly by Bin Qty.
+    """
+    bin_labels_data = []
+    
+    for _, row in merged_df.iterrows():
+        package_qty = safe_numeric(row.get('Package Quantity', 0))
+        bin_qty = safe_numeric(row.get('Bin Quantity', 0))
+        product_name = row.get('Product Name', 'Unknown Product')
+        
+        # DEBUG: Show what we're processing
+        st.write(f"🔍 DATASET DEBUG: {product_name} - Package: {package_qty}, Bin: {bin_qty}")
+        
+        if package_qty > 0 and bin_qty > 0:
+            # Calculate individual bin quantities
+            remaining = package_qty
+            label_number = 1
+            
+            while remaining > 0:
+                if remaining >= bin_qty:
+                    # Full bin
+                    actual_bin_qty = bin_qty
+                    remaining -= bin_qty
+                else:
+                    # Partial bin (remainder)
+                    actual_bin_qty = remaining
+                    remaining = 0
+                
+                # DEBUG: Show what we're creating
+                st.write(f"🔍 DATASET DEBUG: Creating label {label_number} with Actual Bin Qty: {actual_bin_qty}")
+                
+                # Create a new row for this specific label
+                label_row = row.copy()
+                label_row['Actual Bin Qty'] = actual_bin_qty
+                label_row['Label Number'] = label_number
+                label_row['Label Type'] = 'Bin'
+                
+                bin_labels_data.append(label_row)
+                label_number += 1
+    
+    result_df = pd.DataFrame(bin_labels_data) if bin_labels_data else pd.DataFrame()
+    st.write(f"🔍 DATASET DEBUG: Created bin dataset with {len(result_df)} total rows")
+    
+    return result_df
+
+# =============================================================================
+# ADVANCED LABEL QUANTITY CALCULATIONS (DEPRECATED - KEPT FOR REFERENCE)
+# =============================================================================
+
+def calculate_individual_bin_quantities(package_qty: float, bin_qty: float) -> List[float]:
+    """
+    Calculate the actual quantity that should appear on each individual bin label.
+    
+    Examples:
+    - Package=100, Bin=20 → [20, 20, 20, 20, 20] (5 full bins)
+    - Package=50, Bin=30 → [30, 20] (1 full bin + 1 partial bin)
+    
+    Args:
+        package_qty: Total package quantity
+        bin_qty: Capacity of each bin
+        
+    Returns:
+        List of quantities for each label
+    """
+    # DEBUG: Show inputs
+    print(f"🔍 CALC DEBUG: package_qty={package_qty}, bin_qty={bin_qty}")
+    
+    if package_qty <= 0 or bin_qty <= 0:
+        print(f"🔍 CALC DEBUG: Invalid inputs, returning empty list")
+        return []
+    
+    quantities = []
+    remaining = package_qty
+    iteration = 0
+    
+    while remaining > 0:
+        iteration += 1
+        print(f"🔍 CALC DEBUG: Iteration {iteration}, remaining={remaining}")
+        
+        if remaining >= bin_qty:
+            # Full bin
+            quantities.append(bin_qty)
+            remaining -= bin_qty
+            print(f"🔍 CALC DEBUG: Added full bin {bin_qty}, remaining now {remaining}")
+        else:
+            # Partial bin (remainder)
+            quantities.append(remaining)
+            print(f"🔍 CALC DEBUG: Added partial bin {remaining}")
+            remaining = 0
+    
+    print(f"🔍 CALC DEBUG: Final result: {quantities}")
+    return quantities
+
+# =============================================================================
+# UTILITY FUNCTIONS FOR ROBUST NUMERIC HANDLING
+# =============================================================================
+
+def safe_numeric(value, default=0):
+    """
+    Convert any value to numeric, handling strings, NaN, None, etc.
+    Always returns a number (int or float).
+    """
+    if pd.isna(value) or value is None or value == '':
+        return default
+    try:
+        # Handle string numbers that might have leading/trailing whitespace
+        if isinstance(value, str):
+            value = value.strip()
+            if value == '':
+                return default
+        # Convert to float first, then to int if it's a whole number
+        num_val = float(value)
+        return int(num_val) if num_val.is_integer() else num_val
+    except (ValueError, TypeError, AttributeError):
+        return default
+
+def safe_sum(series):
+    """Safely sum a series that might contain strings"""
+    return sum(safe_numeric(x) for x in series)
+
+def safe_count_nonzero(series):
+    """Count non-zero values in a series that might contain strings"""
+    return sum(1 for x in series if safe_numeric(x) > 0)
+
+# =============================================================================
+# FILE UPLOAD INTERFACE
 # =============================================================================
 
 st.sidebar.header("📊 Data Sources")
@@ -93,26 +267,22 @@ products_file = st.sidebar.file_uploader(
 def load_sales_order_csv(uploaded_file) -> Optional[pd.DataFrame]:
     """
     Load Sales Order CSV with special handling for metadata lines.
-    
-    Args:
-        uploaded_file: Streamlit uploaded file object
-        
-    Returns:
-        DataFrame or None if loading fails
+    Uses dtype=str to preserve package labels like "1A40603000067FG000030637".
     """
     try:
-        # Try different parsing methods for robustness
         parsing_methods = [
-            {'skiprows': 3},
-            {'skiprows': 3, 'encoding': 'utf-8', 'quotechar': '"', 'skipinitialspace': True},
-            {'skiprows': 3, 'sep': ';', 'encoding': 'utf-8'},
-            {'skiprows': 3, 'sep': '\t', 'encoding': 'utf-8'}
+            {'skiprows': 3, 'dtype': str},
+            {'skiprows': 3, 'encoding': 'utf-8', 'quotechar': '"', 'skipinitialspace': True, 'dtype': str},
+            {'skiprows': 3, 'sep': ';', 'encoding': 'utf-8', 'dtype': str},
+            {'skiprows': 3, 'sep': '\t', 'encoding': 'utf-8', 'dtype': str}
         ]
         
         for method in parsing_methods:
             try:
-                uploaded_file.seek(0)  # Reset file pointer
-                return pd.read_csv(uploaded_file, **method)
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, **method)
+                if not df.empty:
+                    return df
             except Exception:
                 continue
                 
@@ -123,73 +293,54 @@ def load_sales_order_csv(uploaded_file) -> Optional[pd.DataFrame]:
         return None
 
 def load_standard_csv(uploaded_file, file_type: str) -> Optional[pd.DataFrame]:
-    """
-    Load standard CSV files (Products, Packages).
-    
-    Args:
-        uploaded_file: Streamlit uploaded file object
-        file_type: Type of file for error messaging
-        
-    Returns:
-        DataFrame or None if loading fails
-    """
+    """Load standard CSV files with string preservation"""
     try:
-        return pd.read_csv(uploaded_file)
+        uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file, dtype=str)
+        return df if not df.empty else None
     except Exception as e:
         st.error(f"Error loading {file_type} CSV: {str(e)}")
         return None
 
 def format_delivery_date(date_series: pd.Series) -> pd.Series:
-    """
-    Format delivery dates to mm-dd-yy format.
-    
-    Args:
-        date_series: Pandas series containing dates
-        
-    Returns:
-        Formatted date series
-    """
+    """Format delivery dates to mm-dd-yy format"""
     try:
-        # Convert to datetime first
         date_series = pd.to_datetime(date_series, errors='coerce')
-        # Format as mm-dd-yy
         return date_series.dt.strftime('%m-%d-%y')
     except Exception:
         return date_series.astype(str)
 
 def calculate_label_quantities(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculate Case Labels Needed and Bin Labels Needed columns.
-    
-    Args:
-        df: DataFrame with Package Quantity, Case Quantity, Bin Quantity columns
-        
-    Returns:
-        DataFrame with added calculated columns
+    Calculate Case Labels Needed and Bin Labels Needed with robust numeric handling.
     """
-    # Case Labels Needed = ceil(Package Quantity / Case Quantity)
+    # Case Labels Needed calculation
     if 'Package Quantity' in df.columns and 'Case Quantity' in df.columns:
-        df['Case Labels Needed'] = df.apply(
-            lambda row: math.ceil(row['Package Quantity'] / row['Case Quantity']) 
-            if (pd.notna(row['Package Quantity']) and 
-                pd.notna(row['Case Quantity']) and 
-                row['Case Quantity'] > 0) 
-            else 0, 
-            axis=1
-        )
+        case_labels = []
+        for _, row in df.iterrows():
+            pkg_qty = safe_numeric(row.get('Package Quantity', 0))
+            case_qty = safe_numeric(row.get('Case Quantity', 0))
+            
+            if pkg_qty > 0 and case_qty > 0:
+                case_labels.append(math.ceil(pkg_qty / case_qty))
+            else:
+                case_labels.append(0)
+        df['Case Labels Needed'] = case_labels
     else:
         df['Case Labels Needed'] = 0
     
-    # Bin Labels Needed = ceil(Package Quantity / Bin Quantity) 
+    # Bin Labels Needed calculation
     if 'Package Quantity' in df.columns and 'Bin Quantity' in df.columns:
-        df['Bin Labels Needed'] = df.apply(
-            lambda row: math.ceil(row['Package Quantity'] / row['Bin Quantity']) 
-            if (pd.notna(row['Package Quantity']) and 
-                pd.notna(row['Bin Quantity']) and 
-                row['Bin Quantity'] > 0) 
-            else 0, 
-            axis=1
-        )
+        bin_labels = []
+        for _, row in df.iterrows():
+            pkg_qty = safe_numeric(row.get('Package Quantity', 0))
+            bin_qty = safe_numeric(row.get('Bin Quantity', 0))
+            
+            if pkg_qty > 0 and bin_qty > 0:
+                bin_labels.append(math.ceil(pkg_qty / bin_qty))
+            else:
+                bin_labels.append(0)
+        df['Bin Labels Needed'] = bin_labels
     else:
         df['Bin Labels Needed'] = 0
     
@@ -199,23 +350,17 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
                       products_df: pd.DataFrame, 
                       packages_df: pd.DataFrame) -> Optional[pd.DataFrame]:
     """
-    Merge the three data sources and create the final label dataset.
+    Merge the three data sources and create label-ready datasets.
     
-    Args:
-        sales_order_df: Sales order data
-        products_df: Products data  
-        packages_df: Packages data
-        
-    Returns:
-        Merged and processed DataFrame or None if error
+    NEW APPROACH: Creates separate datasets for case and bin labels where each row = 1 label
     """
     try:
-        # Store raw data in session state
+        # Store raw data
         st.session_state.sales_order_data = sales_order_df
         st.session_state.products_data = products_df
         st.session_state.packages_data = packages_df
         
-        # First merge: Sales Order + Products
+        # Merge operations (same as before)
         merged_df = sales_order_df.merge(
             products_df, 
             left_on='Product Id', 
@@ -224,7 +369,6 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
             suffixes=('', '_products')
         )
         
-        # Second merge: + Packages
         final_df = merged_df.merge(
             packages_df, 
             left_on='Package Label', 
@@ -233,7 +377,7 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
             suffixes=('', '_packages')
         )
         
-        # Column mapping for cleaner output
+        # Column mapping (same as before)
         column_mapping = {
             'Product': 'Product Name',
             'Category': 'Category',
@@ -250,23 +394,46 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
             'Sell By': 'Sell by'
         }
         
-        # Create final DataFrame with mapped columns
-        label_data = pd.DataFrame()
-        
+        # Create base dataset
+        base_data = pd.DataFrame()
         for original_col, new_col in column_mapping.items():
             if original_col in final_df.columns:
-                label_data[new_col] = final_df[original_col]
+                base_data[new_col] = final_df[original_col]
             else:
-                label_data[new_col] = None
+                base_data[new_col] = None
         
         # Format delivery dates
-        if 'Delivery Date' in label_data.columns:
-            label_data['Delivery Date'] = format_delivery_date(label_data['Delivery Date'])
+        if 'Delivery Date' in base_data.columns:
+            base_data['Delivery Date'] = format_delivery_date(base_data['Delivery Date'])
         
-        # Calculate label quantities
-        label_data = calculate_label_quantities(label_data)
+        # NEW APPROACH: Create label-ready datasets
+        st.info("🔄 Creating label-ready datasets...")
         
-        # Reorder columns for consistent output
+        # Create case labels dataset (each row = 1 case label)
+        case_labels_df = create_case_labels_dataset(base_data)
+        st.session_state.case_labels_data = case_labels_df
+        
+        # Create bin labels dataset (each row = 1 bin label)  
+        bin_labels_df = create_bin_labels_dataset(base_data)
+        st.session_state.bin_labels_data = bin_labels_df
+        
+        # Show summary
+        case_count = len(case_labels_df) if not case_labels_df.empty else 0
+        bin_count = len(bin_labels_df) if not bin_labels_df.empty else 0
+        
+        st.success(f"✅ Created {case_count} case labels and {bin_count} bin labels")
+        
+        # Return the base data for overview purposes (add summary columns for display)
+        base_data['Case Labels Needed'] = base_data.apply(
+            lambda row: len(create_case_labels_dataset(pd.DataFrame([row]))) if safe_numeric(row.get('Package Quantity', 0)) > 0 else 0, 
+            axis=1
+        )
+        base_data['Bin Labels Needed'] = base_data.apply(
+            lambda row: len(create_bin_labels_dataset(pd.DataFrame([row]))) if safe_numeric(row.get('Package Quantity', 0)) > 0 else 0, 
+            axis=1
+        )
+        
+        # Reorder columns
         desired_order = [
             'Product Name', 'Category', 'Batch No', 'Package Label', 
             'Package Quantity', 'Case Quantity', 'Bin Quantity', 
@@ -275,70 +442,66 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
             'Delivery Date', 'Sell by'
         ]
         
-        return label_data[desired_order]
+        for col in desired_order:
+            if col not in base_data.columns:
+                base_data[col] = None
+        
+        return base_data[desired_order]
         
     except Exception as e:
         st.error(f"❌ Error processing data: {str(e)}")
-        show_column_debug_info(sales_order_df, products_df, packages_df)
         return None
-
-def show_column_debug_info(sales_order_df: pd.DataFrame, 
-                          products_df: pd.DataFrame, 
-                          packages_df: pd.DataFrame):
-    """Show debug information about CSV column structure"""
-    st.write("**Debug: Column Structure**")
-    st.write("**Sales Order columns:**", list(sales_order_df.columns))
-    st.write("**Products columns:**", list(products_df.columns))
-    st.write("**Packages columns:**", list(packages_df.columns))
 
 # =============================================================================
 # ZEBRA PRINTING FUNCTIONS  
 # =============================================================================
 
-def generate_label_zpl(product_name: str, batch_no: str, qty: str, 
-                      pkg_qty: str, date_str: str, package_label: str, 
-                      sell_by: str, invoice_no: str, sales_order: str, category: str,
-                      label_type: str = "Case",
-                      label_width: float = 1.75, label_height: float = 0.875, 
-                      dpi: int = 300) -> str:
+def sanitize_qr_data(package_label) -> str:
     """
-    Generate ZPL code for Zebra printer labels with flexible sizing.
+    Preserve complete package label for QR code.
+    FIXED: The truncation issue was ZPL format, not data preservation.
+    """
+    if pd.isna(package_label) or package_label is None:
+        return ""
     
-    Args:
-        product_name: Product name (will be truncated if too long)
-        batch_no: Batch number
-        qty: Quantity (Case Qty or Bin Qty depending on label type)
-        pkg_qty: Package quantity
-        date_str: Date string
-        package_label: Package label for QR code
-        sell_by: Sell by date
-        invoice_no: Invoice number
-        sales_order: Sales order number
-        category: Product category
-        label_type: "Case" or "Bin" for label formatting
-        label_width: Label width in inches
-        label_height: Label height in inches
-        dpi: Printer DPI (dots per inch)
-        
-    Returns:
-        ZPL code string
+    # Convert to string and strip whitespace only
+    qr_data = str(package_label).strip()
+    return qr_data
+
+def generate_bin_label_zpl(product_name: str, batch_no: str, actual_bin_qty: float,
+                          pkg_qty: str, date_str: str, package_label: str, 
+                          sell_by: str, invoice_no: str, metrc_manifest: str, category: str,
+                          label_width: float = 1.75, label_height: float = 0.875, 
+                          dpi: int = 300) -> str:
     """
-    # Calculate label dimensions in dots
+    Generate ZPL code specifically for BIN labels with quantity baked in.
+    
+    CORRECT APPROACH: Each label is completely separate with its specific quantity
+    """
+    # Calculate dimensions
     width_dots = int(label_width * dpi)
     height_dots = int(label_height * dpi)
     
-    # Font sizes for 300 DPI labels
-    extra_large_font = 32  # Qty
-    large_font = 28        # Product name, Delivered/Date, Category  
-    medium_font = 20       # Batch, Pkg Qty, Invoice/SO
-    small_font = 16        # Package label text at bottom
+    # Font sizes
+    fonts = {
+        'extra_large': 32,  # Quantity
+        'large': 28,        # Product name, Category  
+        'medium': 20,       # Batch, Delivered
+        'small': 16,        # Pkg Qty line
+        'small_plus': 18    # Bottom line
+    }
     
-    # Calculate margins and positioning
+    # Layout constants
     left_margin = 30
     top_margin = 20
     
-    # Handle product name - can use full width
+    # Preserve complete QR data
+    qr_data = sanitize_qr_data(package_label)
+    
+    # Handle product name wrapping
     product_name = str(product_name) if pd.notna(product_name) else ""
+    product_lines = []
+    
     if len(product_name) > 35:
         words = product_name.split()
         line1 = ""
@@ -352,9 +515,10 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: str,
         
         if len(line2) > 35:
             line2 = line2[:32] + "..."
+            
+        product_lines = [line1, line2] if line2 else [line1]
     else:
-        line1 = product_name
-        line2 = ""
+        product_lines = [product_name]
     
     # Format dates
     try:
@@ -367,180 +531,314 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: str,
         formatted_date = str(date_str) if date_str else datetime.now().strftime('%m/%d/%Y')
     
     # Handle sell by date
-    try:
-        if pd.notna(sell_by) and sell_by and str(sell_by).strip():
+    sell_by_text = ""
+    if pd.notna(sell_by) and sell_by and str(sell_by).strip():
+        try:
             sell_by_obj = pd.to_datetime(sell_by)
-            formatted_sell_by = sell_by_obj.strftime('%m/%d/%Y')
-            show_sell_by = True
-        else:
-            formatted_sell_by = ""
-            show_sell_by = False
-    except Exception:
-        formatted_sell_by = str(sell_by) if sell_by else ""
-        show_sell_by = bool(formatted_sell_by)
+            sell_by_text = f"Sell By: {sell_by_obj.strftime('%m/%d/%Y')}"
+        except Exception:
+            sell_by_text = f"Sell By: {str(sell_by)}"
     
-    # Prepare QR code data - FULL package label, no truncation at all
-    qr_data = str(package_label) if pd.notna(package_label) and package_label else ""
-    # Clean any extra whitespace but keep the full string
-    qr_data = qr_data.strip()
+    # Layout positioning
+    qr_size = 5
+    qr_x = width_dots - 140
+    qr_y = height_dots - 160  # Positioned with clearance
     
-    # Format quantity label and make it extra large
-    qty_label = f"Qty: {qty}" if label_type == "Case" else f"Bin Qty: {qty}"
+    # Bottom area
+    pkg_qty_y = height_dots - 35
+    combined_line_y = height_dots - 15
     
-    # Calculate center position for "Delivered: mm/dd/yy" text 
-    center_x = int(width_dots / 2) - 80  # Approximate center for longer text
+    # Create combined bottom line text
+    combined_parts = []
+    if invoice_no:
+        combined_parts.append(str(invoice_no))
+    if metrc_manifest:
+        combined_parts.append(str(metrc_manifest))
+    if qr_data:
+        display_package = qr_data[:25] + "..." if len(qr_data) > 25 else qr_data
+        combined_parts.append(display_package)
     
-    # QR code positioning - right side
-    qr_x = 400  # Right side
-    qr_y = 120  # Positioned appropriately
+    combined_text = " | ".join(combined_parts)
     
-    # Package label text positioning - at same level as current category, right aligned
-    package_text = str(package_label) if pd.notna(package_label) else ""
-    package_y = 155  # Same level as where category currently is
-    # Calculate proper right alignment - estimate text width and position accordingly
-    # For 16pt font, roughly 10-12 dots per character
-    if package_text:
-        estimated_text_width = len(package_text) * 10  # Conservative estimate
-        package_x = width_dots - estimated_text_width - 10  # Position so text ends at right edge
-    else:
-        package_x = width_dots - 10
-    
-    # Start building ZPL
+    # Build ZPL - BAKED-IN QUANTITY APPROACH
     current_y = top_margin
-    zpl = f"""^XA
-^CF0,{large_font}
-^FO{left_margin},{current_y}^FD{line1}^FS"""
+    zpl_lines = ["^XA", f"^CF0,{fonts['large']}"]
     
-    current_y += 35
-    
-    # Add second line of product name if needed
-    if line2:
-        zpl += f"""
-^FO{left_margin},{current_y}^FD{line2}^FS"""
+    # Product name
+    for line in product_lines:
+        zpl_lines.append(f"^FO{left_margin},{current_y}^FD{line}^FS")
         current_y += 35
     
-    # Batch number (left side)
-    zpl += f"""
-^CF0,{medium_font}
-^FO{left_margin},{current_y}^FDBatch: {batch_no}^FS"""
+    # Batch number
+    zpl_lines.extend([
+        f"^CF0,{fonts['medium']}",
+        f"^FO{left_margin},{current_y}^FDBatch: {batch_no}^FS"
+    ])
     current_y += 30
     
-    # Qty - make it EXTRA LARGE
-    zpl += f"""
-^CF0,{extra_large_font}
-^FO{left_margin},{current_y}^FD{qty_label}^FS"""
+    # Quantity - BAKED IN, NOT PARAMETER-BASED
+    # Format the actual bin quantity directly into the ZPL
+    if actual_bin_qty == int(actual_bin_qty):  # If it's a whole number
+        qty_display = f"Bin Qty: {int(actual_bin_qty)}"
+    else:
+        qty_display = f"Bin Qty: {actual_bin_qty}"
+        
+    zpl_lines.extend([
+        f"^CF0,{fonts['extra_large']}",
+        f"^FO{left_margin},{current_y}^FD{qty_display}^FS"
+    ])
     current_y += 40
     
-    # Category (moved up, large font like product name)
+    # Category
     category_text = str(category) if pd.notna(category) else ""
     if category_text:
-        zpl += f"""
-^CF0,{large_font}
-^FO{left_margin},{current_y}^FD{category_text}^FS"""
-    current_y += 35
+        zpl_lines.extend([
+            f"^CF0,{fonts['large']}",
+            f"^FO{left_margin},{current_y}^FD{category_text}^FS"
+        ])
+        current_y += 35
     
-    # Pkg Qty (moved down)
-    zpl += f"""
-^CF0,{medium_font}
-^FO{left_margin},{current_y}^FDPkg Qty {pkg_qty}^FS"""
-    current_y += 25
+    # Delivered date
+    zpl_lines.extend([
+        f"^CF0,{fonts['medium']}",
+        f"^FO{left_margin},{current_y}^FDDelivered: {formatted_date}^FS"
+    ])
     
-    # Invoice | Sales Order (moved down)
-    invoice_text = f"{invoice_no} | {sales_order}" if invoice_no and sales_order else "Invoice | Sales Order"
-    zpl += f"""
-^CF0,{medium_font}
-^FO{left_margin},{current_y}^FD{invoice_text}^FS"""
+    # Sell by date (if available)
+    if sell_by_text:
+        current_y += 30
+        zpl_lines.extend([
+            f"^CF0,{fonts['medium']}",
+            f"^FO{left_margin},{current_y}^FD{sell_by_text}^FS"
+        ])
     
-    # "Delivered: mm/dd/yy" - move to middle of label (vertically centered)
-    delivered_text = f"Delivered: {formatted_date}"
-    delivered_y = int(height_dots / 2) - 10  # Middle of label
-    zpl += f"""
-^CF0,{large_font}
-^FO{center_x},{delivered_y}^FD{delivered_text}^FS"""
+    # QR code with proper format
+    if qr_data:
+        zpl_lines.append(f"^FO{qr_x},{qr_y}^BQN,2,{qr_size}^FDQA,{qr_data}^FS")
     
-    # Sell By (only if there's a sell by date) - position below delivered
-    if show_sell_by:
-        sell_by_y = delivered_y + 35
-        zpl += f"""
-^CF0,{medium_font}
-^FO{left_margin},{sell_by_y}^FDSell By: {formatted_sell_by}^FS"""
+    # Pkg Qty line
+    if pkg_qty:
+        zpl_lines.extend([
+            f"^CF0,{fonts['small']}",
+            f"^FO{left_margin},{pkg_qty_y}^FDPkg Qty: {pkg_qty}^FS"
+        ])
     
-    # QR code in right side
-    zpl += f"""
-^FO{qr_x},{qr_y}^BQN,2,4^FD{qr_data}^FS"""
+    # Combined bottom line
+    if combined_text:
+        zpl_lines.extend([
+            f"^CF0,{fonts['small_plus']}",
+            f"^FO{left_margin},{combined_line_y}^FD{combined_text}^FS"
+        ])
     
-    # Package label text - properly right aligned, no missing characters
-    if package_text:
-        zpl += f"""
-^CF0,{small_font}
-^FO{package_x},{package_y}^FD{package_text}^FS"""
+    zpl_lines.append("^XZ")
+    return "\n".join(zpl_lines)
+
+def generate_label_zpl(product_name: str, batch_no: str, qty: str, 
+                      pkg_qty: str, date_str: str, package_label: str, 
+                      sell_by: str, invoice_no: str, metrc_manifest: str, category: str,
+                      label_type: str = "Case",
+                      label_width: float = 1.75, label_height: float = 0.875, 
+                      dpi: int = 300) -> str:
+    """
+    Generate ZPL code for Zebra printer labels with fixed layout.
     
-    zpl += """
-^XZ"""
+    FIXED: QR code now uses proper ZPL format with QA, switches to prevent truncation
+    UPDATED: Uses METRC Manifest Number instead of Sales Order Number
+    """
+    # Calculate dimensions
+    width_dots = int(label_width * dpi)
+    height_dots = int(label_height * dpi)
     
-    return zpl
+    # Font sizes
+    fonts = {
+        'extra_large': 32,  # Quantity
+        'large': 28,        # Product name, Category  
+        'medium': 20,       # Batch, Delivered
+        'small': 16,        # Pkg Qty line
+        'small_plus': 18    # Bottom line (increased by 2pts)
+    }
+    
+    # Layout constants
+    left_margin = 30
+    top_margin = 20
+    
+    # Preserve complete QR data
+    qr_data = sanitize_qr_data(package_label)
+    
+    # Handle product name wrapping
+    product_name = str(product_name) if pd.notna(product_name) else ""
+    product_lines = []
+    
+    if len(product_name) > 35:
+        words = product_name.split()
+        line1 = ""
+        line2 = ""
+        
+        for word in words:
+            if len(line1 + " " + word) <= 35 and not line2:
+                line1 = (line1 + " " + word).strip()
+            else:
+                line2 = (line2 + " " + word).strip()
+        
+        if len(line2) > 35:
+            line2 = line2[:32] + "..."
+            
+        product_lines = [line1, line2] if line2 else [line1]
+    else:
+        product_lines = [product_name]
+    
+    # Format dates
+    try:
+        if pd.notna(date_str) and date_str and str(date_str).strip():
+            date_obj = pd.to_datetime(date_str)
+            formatted_date = date_obj.strftime('%m/%d/%Y')
+        else:
+            formatted_date = datetime.now().strftime('%m/%d/%Y')
+    except Exception:
+        formatted_date = str(date_str) if date_str else datetime.now().strftime('%m/%d/%Y')
+    
+    # Handle sell by date
+    sell_by_text = ""
+    if pd.notna(sell_by) and sell_by and str(sell_by).strip():
+        try:
+            sell_by_obj = pd.to_datetime(sell_by)
+            sell_by_text = f"Sell By: {sell_by_obj.strftime('%m/%d/%Y')}"
+        except Exception:
+            sell_by_text = f"Sell By: {str(sell_by)}"
+    
+    # Layout positioning
+    qr_size = 5
+    qr_x = width_dots - 140
+    qr_y = height_dots - 160  # Moved up further to prevent overlap with bottom text
+    
+    # Bottom area
+    pkg_qty_y = height_dots - 35
+    combined_line_y = height_dots - 15
+    
+    # Create combined bottom line text: Invoice | METRC Manifest | Package Label
+    combined_parts = []
+    if invoice_no:
+        combined_parts.append(str(invoice_no))
+    if metrc_manifest:
+        combined_parts.append(str(metrc_manifest))  # Raw METRC number only
+    if qr_data:  # Use same qr_data to ensure consistency
+        # Truncate if too long for combined line
+        display_package = qr_data[:25] + "..." if len(qr_data) > 25 else qr_data
+        combined_parts.append(display_package)
+    
+    combined_text = " | ".join(combined_parts)
+    
+    # Build ZPL
+    current_y = top_margin
+    zpl_lines = ["^XA", f"^CF0,{fonts['large']}"]
+    
+    # Product name
+    for line in product_lines:
+        zpl_lines.append(f"^FO{left_margin},{current_y}^FD{line}^FS")
+        current_y += 35
+    
+    # Batch number
+    zpl_lines.extend([
+        f"^CF0,{fonts['medium']}",
+        f"^FO{left_margin},{current_y}^FDBatch: {batch_no}^FS"
+    ])
+    current_y += 30
+    
+    # Quantity (extra large)
+    qty_label = f"Qty: {qty}" if label_type == "Case" else f"Bin Qty: {qty}"
+    zpl_lines.extend([
+        f"^CF0,{fonts['extra_large']}",
+        f"^FO{left_margin},{current_y}^FD{qty_label}^FS"
+    ])
+    current_y += 40
+    
+    # Category
+    category_text = str(category) if pd.notna(category) else ""
+    if category_text:
+        zpl_lines.extend([
+            f"^CF0,{fonts['large']}",
+            f"^FO{left_margin},{current_y}^FD{category_text}^FS"
+        ])
+        current_y += 35
+    
+    # Delivered date (under category)
+    zpl_lines.extend([
+        f"^CF0,{fonts['medium']}",
+        f"^FO{left_margin},{current_y}^FDDelivered: {formatted_date}^FS"
+    ])
+    
+    # Sell by date (if available)
+    if sell_by_text:
+        current_y += 30
+        zpl_lines.extend([
+            f"^CF0,{fonts['medium']}",
+            f"^FO{left_margin},{current_y}^FD{sell_by_text}^FS"
+        ])
+    
+    # QR code (larger, positioned above bottom text) - FIXED with proper ZPL QR switches
+    if qr_data:
+        # SOLUTION: Add QR switches before data to prevent truncation
+        # QA, = Q (error correction level) + A (automatic data input) + comma
+        zpl_lines.append(f"^FO{qr_x},{qr_y}^BQN,2,{qr_size}^FDQA,{qr_data}^FS")
+    
+    # Pkg Qty line
+    if pkg_qty:
+        zpl_lines.extend([
+            f"^CF0,{fonts['small']}",
+            f"^FO{left_margin},{pkg_qty_y}^FDPkg Qty: {pkg_qty}^FS"
+        ])
+    
+    # Combined bottom line (larger font)
+    if combined_text:
+        zpl_lines.extend([
+            f"^CF0,{fonts['small_plus']}",
+            f"^FO{left_margin},{combined_line_y}^FD{combined_text}^FS"
+        ])
+    
+    zpl_lines.append("^XZ")
+    return "\n".join(zpl_lines)
 
 def send_zpl_to_printer(zpl_data: str, printer_ip: str, 
                        printer_port: int = 9100) -> Tuple[bool, str]:
-    """
-    Send ZPL data to Zebra printer via network.
-    
-    Args:
-        zpl_data: ZPL code string
-        printer_ip: Printer IP address
-        printer_port: Printer port (default 9100)
-        
-    Returns:
-        Tuple of (success: bool, message: str)
-    """
+    """Send ZPL data to Zebra printer via network"""
     try:
         if not printer_ip:
             return False, "No printer IP address provided"
             
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10)
-        sock.connect((printer_ip, printer_port))
-        sock.send(zpl_data.encode('utf-8'))
-        sock.close()
+        socket.inet_aton(printer_ip)  # Validate IP format
+        
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(10)
+            sock.connect((printer_ip, printer_port))
+            sock.send(zpl_data.encode('utf-8'))
+            
         return True, "Label sent successfully"
         
     except socket.timeout:
         return False, "Connection timeout - check printer IP and network"
     except ConnectionRefusedError:
         return False, "Connection refused - check printer is on and IP is correct"
+    except socket.gaierror:
+        return False, "Invalid IP address format"
     except Exception as e:
         return False, f"Network error: {str(e)}"
 
 def generate_labels_for_dataset(df: pd.DataFrame, label_type: str, 
                                label_width: float, label_height: float, dpi: int) -> List[str]:
-    """
-    Generate ZPL labels for entire dataset with flexible sizing.
-    
-    Args:
-        df: DataFrame with label data
-        label_type: "Case Labels" or "Bin Labels"
-        label_width: Label width in inches
-        label_height: Label height in inches
-        dpi: Printer DPI
-        
-    Returns:
-        List of ZPL code strings
-    """
+    """Generate ZPL labels for entire dataset"""
     labels = []
     
     for _, row in df.iterrows():
-        # Determine quantity needed and type
         if label_type == "Case Labels":
-            qty_needed = int(row.get('Case Labels Needed', 0))
+            qty_needed = safe_numeric(row.get('Case Labels Needed', 0))
             qty_value = row.get('Case Quantity', '')
             zpl_type = "Case"
-        else:  # Bin Labels
-            qty_needed = int(row.get('Bin Labels Needed', 0))
+        else:
+            qty_needed = safe_numeric(row.get('Bin Labels Needed', 0))
             qty_value = row.get('Bin Quantity', '')
             zpl_type = "Bin"
         
-        # Generate the required number of labels
-        for _ in range(qty_needed):
+        for _ in range(int(qty_needed)):
             zpl = generate_label_zpl(
                 product_name=row.get('Product Name', ''),
                 batch_no=row.get('Batch No', ''),
@@ -550,7 +848,7 @@ def generate_labels_for_dataset(df: pd.DataFrame, label_type: str,
                 package_label=row.get('Package Label', ''),
                 sell_by=row.get('Sell by', ''),
                 invoice_no=row.get('Invoice No', ''),
-                sales_order=row.get('Sales Order Number', ''),
+                metrc_manifest=row.get('METRC Manifest', ''),  # UPDATED: Use METRC instead of Sales Order
                 category=row.get('Category', ''),
                 label_type=zpl_type,
                 label_width=label_width,
@@ -574,12 +872,11 @@ if st.sidebar.button("🚀 Process Data", type="primary",
         products_df = load_standard_csv(products_file, "Products")
         packages_df = load_standard_csv(packages_file, "Packages")
         
-        # Check if all files loaded successfully
         if sales_order_df is None or products_df is None or packages_df is None:
             st.error("❌ Failed to load one or more CSV files")
             st.stop()
         
-        # Display file information
+        # Display file info
         file_info = (f"Sales Orders: {len(sales_order_df):,} rows | "
                     f"Products: {len(products_df):,} rows | "
                     f"Packages: {len(packages_df):,} rows")
@@ -600,16 +897,13 @@ if st.sidebar.button("🚀 Process Data", type="primary",
 if st.session_state.processed_data is not None:
     processed_df = st.session_state.processed_data
     
-    # Create tabs for organization
+    # Create tabs
     tab1, tab2 = st.tabs(["🎯 Label Data Generator", "📊 Data Overview"])
     
     with tab1:
         st.header("🎯 Create Custom Label Data")
         
-        # =============================================================================
-        # FILTERING SECTION WITH CASCADING LOGIC
-        # =============================================================================
-        
+        # Filtering section
         col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
         
         with col1:
@@ -617,7 +911,6 @@ if st.session_state.processed_data is not None:
             selected_customers = st.multiselect("Select Customers", customers)
             
         with col2:
-            # Cascade: filter orders by selected customers
             if selected_customers:
                 filtered_orders = processed_df[
                     processed_df['Customer'].isin(selected_customers)
@@ -628,7 +921,6 @@ if st.session_state.processed_data is not None:
             selected_orders = st.multiselect("Select Sales Orders", orders)
             
         with col3:
-            # Cascade: filter invoices by customers or orders
             if selected_customers:
                 filtered_invoices = processed_df[
                     processed_df['Customer'].isin(selected_customers)
@@ -643,7 +935,6 @@ if st.session_state.processed_data is not None:
             selected_invoices = st.multiselect("Select Invoices", invoices)
         
         with col4:
-            # Cascade: filter dates by previous selections
             if selected_customers:
                 filtered_dates = processed_df[
                     processed_df['Customer'].isin(selected_customers)
@@ -661,29 +952,21 @@ if st.session_state.processed_data is not None:
             delivery_dates = sorted(filtered_dates.tolist())
             selected_dates = st.multiselect("Select Delivery Dates", delivery_dates)
         
-        # Apply filters to dataset
+        # Apply filters
         filtered_df = processed_df.copy()
         
         if selected_customers:
             filtered_df = filtered_df[filtered_df['Customer'].isin(selected_customers)]
-            
         if selected_orders:
             filtered_df = filtered_df[filtered_df['Sales Order Number'].isin(selected_orders)]
-            
         if selected_invoices:
             filtered_df = filtered_df[filtered_df['Invoice No'].isin(selected_invoices)]
-            
         if selected_dates:
             filtered_df = filtered_df[filtered_df['Delivery Date'].isin(selected_dates)]
         
-        # =============================================================================
-        # DATA DISPLAY AND ROW SELECTION
-        # =============================================================================
-        
+        # Data display and row selection
         st.subheader(f"🏷️ Label Data Results ({len(filtered_df):,} records)")
         
-        # Row selection
-        st.subheader("Row Selection")
         select_all = st.checkbox("Select all rows", value=True)
         
         if not select_all:
@@ -693,237 +976,222 @@ if st.session_state.processed_data is not None:
                 default=filtered_df.index.tolist(),
                 format_func=lambda x: f"Row {x}: {filtered_df.loc[x, 'Product Name'] if 'Product Name' in filtered_df.columns else 'N/A'}"
             )
-            display_data = filtered_df.loc[selected_indices]
+            display_data = filtered_df.loc[selected_indices] if selected_indices else pd.DataFrame()
         else:
             display_data = filtered_df
         
         # Display the data
-        st.dataframe(display_data, width='stretch', height=400)
-        
-        # =============================================================================
-        # EXPORT AND PRINTING SECTION
-        # =============================================================================
-        
-        # Export section
-        st.header("💾 Export Data")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # CSV download
-            csv_buffer = io.StringIO()
-            display_data.to_csv(csv_buffer, index=False)
-            csv_data = csv_buffer.getvalue()
-            
-            st.download_button(
-                label="📄 Download CSV",
-                data=csv_data,
-                file_name=f"label_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
-        with col2:
-            # Summary stats
-            st.write("**Summary:**")
-            st.write(f"Total rows: {len(display_data):,}")
-            if 'Package Quantity' in display_data.columns:
-                total_packages = display_data['Package Quantity'].sum()
-                st.write(f"Total packages: {total_packages:,}")
-            if 'Case Labels Needed' in display_data.columns:
-                total_case_labels = display_data['Case Labels Needed'].sum()
-                st.write(f"Total case labels needed: {total_case_labels:,}")
-            if 'Bin Labels Needed' in display_data.columns:
-                total_bin_labels = display_data['Bin Labels Needed'].sum()
-                st.write(f"Total bin labels needed: {total_bin_labels:,}")
-            if 'Customer' in display_data.columns:
-                unique_customers = display_data['Customer'].nunique()
-                st.write(f"Unique customers: {unique_customers}")
-        
-        # =============================================================================
-        # ZEBRA LABEL PRINTING SECTION
-        # =============================================================================
-        
-        if QR_AVAILABLE:
-            st.header("🖨️ Zebra Label Printing")
-            
-            # Printer settings - keep it simple for now
-            col1, col2, col3 = st.columns([2, 2, 2])
-            
-            with col1:
-                label_type = st.selectbox(
-                    "Label Type",
-                    ["Case Labels", "Bin Labels"],
-                    help="Choose whether to generate case or bin labels"
-                )
-            
-            with col2:
-                printer_connection = st.selectbox(
-                    "Connection",
-                    ["Network (IP)", "USB/Local"],
-                    help="How is your Zebra printer connected?"
-                )
-            
-            with col3:
-                if printer_connection == "Network (IP)":
-                    printer_ip = st.text_input(
-                        "Printer IP Address",
-                        placeholder="192.168.1.100",
-                        help="Enter the IP address of your Zebra printer"
-                    )
-                else:
-                    st.info("USB printing requires additional setup")
-                    printer_ip = None
-            
-            # Fixed settings for current setup
-            label_width = 1.75
-            label_height = 0.875
-            selected_dpi = 300
-            
-            # Calculate labels for selected type
-            if label_type == "Case Labels":
-                total_labels_needed = display_data['Case Labels Needed'].sum()
-                label_column = 'Case Labels Needed'
-            else:
-                total_labels_needed = display_data['Bin Labels Needed'].sum()
-                label_column = 'Bin Labels Needed'
-            
-            # Show label preview and printing options
-            col1, col2 = st.columns([3, 2])
-            
-            with col1:
-                st.subheader(f"📋 {label_type} Preview")
-                
-                # Show breakdown of labels by product
-                label_breakdown = display_data[display_data[label_column] > 0].copy()
-                if len(label_breakdown) > 0:
-                    st.write(f"**{len(label_breakdown)} products** will generate **{int(total_labels_needed)} labels**")
-                    
-                    # Show preview table
-                    preview_df = label_breakdown[['Product Name', 'Customer', label_column]].head(10)
-                    st.dataframe(preview_df, width='stretch')
-                    
-                    if len(label_breakdown) > 10:
-                        st.write(f"... and {len(label_breakdown) - 10} more products")
-                else:
-                    st.warning(f"No {label_type.lower()} needed for selected data")
-            
-            with col2:
-                st.subheader("🎯 Print Options")
-                
-                if total_labels_needed > 0:
-                    st.metric("Total Labels", f"{int(total_labels_needed)}")
-                    
-                    # Generate ZPL preview
-                    if st.button("👀 Preview ZPL", help="Generate ZPL code preview"):
-                        if len(display_data) > 0:
-                            sample_row = display_data.iloc[0]
-                            qty_value = (sample_row.get('Case Quantity', '') if label_type == "Case Labels" 
-                                       else sample_row.get('Bin Quantity', ''))
-                            zpl_type = "Case" if label_type == "Case Labels" else "Bin"
-                            
-                            sample_zpl = generate_label_zpl(
-                                product_name=sample_row.get('Product Name', ''),
-                                batch_no=sample_row.get('Batch No', ''),
-                                qty=qty_value,
-                                pkg_qty=sample_row.get('Package Quantity', ''),
-                                date_str=sample_row.get('Delivery Date', ''),
-                                package_label=sample_row.get('Package Label', ''),
-                                sell_by=sample_row.get('Sell by', ''),
-                                invoice_no=sample_row.get('Invoice No', ''),
-                                sales_order=sample_row.get('Sales Order Number', ''),
-                                category=sample_row.get('Category', ''),
-                                label_type=zpl_type,
-                                label_width=label_width,
-                                label_height=label_height,
-                                dpi=selected_dpi
-                            )
-                            
-                            st.code(sample_zpl, language="text")
-                            
-                            # Show calculated dimensions for reference
-                            width_dots = int(label_width * selected_dpi)
-                            height_dots = int(label_height * selected_dpi)
-                            st.info(f"Label: {label_width}\" × {label_height}\" = {width_dots} × {height_dots} dots at {selected_dpi} DPI")
-                    
-                    # Print buttons
-                    if printer_connection == "Network (IP)" and printer_ip:
-                        if st.button(f"🖨️ Print All {label_type}", type="primary"):
-                            with st.spinner(f"Generating and printing {int(total_labels_needed)} labels..."):
-                                success_count = 0
-                                error_messages = []
-                                
-                                labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, selected_dpi)
-                                
-                                for zpl in labels:
-                                    success, message = send_zpl_to_printer(zpl, printer_ip)
-                                    if success:
-                                        success_count += 1
-                                    else:
-                                        error_messages.append(message)
-                                        break  # Stop on first error
-                                
-                                if error_messages:
-                                    st.error(f"❌ Printing failed: {error_messages[0]}")
-                                    if success_count > 0:
-                                        st.info(f"✅ {success_count} labels printed before error")
-                                else:
-                                    st.success(f"✅ Successfully printed {success_count} labels!")
-                    
-                    # Download ZPL file option
-                    if st.button("📥 Download ZPL File"):
-                        labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, selected_dpi)
-                        zpl_content = "\n".join(labels)
-                        
-                        # Create descriptive filename with label size, customer, invoice, and sales order
-                        filename_parts = []
-                        filename_parts.append(f"{label_width}x{label_height}")
-                        
-                        # Add customer info if single customer
-                        customers = display_data['Customer'].dropna().unique()
-                        if len(customers) == 1:
-                            customer_clean = str(customers[0]).replace(' ', '_').replace('/', '_')
-                            filename_parts.append(customer_clean)
-                        
-                        # Add invoice if single invoice
-                        invoices = display_data['Invoice No'].dropna().unique()
-                        if len(invoices) == 1:
-                            invoice_clean = str(invoices[0]).replace(' ', '_').replace('/', '_')
-                            filename_parts.append(f"INV-{invoice_clean}")
-                        
-                        # Add sales order if single sales order
-                        sales_orders = display_data['Sales Order Number'].dropna().unique()
-                        if len(sales_orders) == 1:
-                            so_clean = str(sales_orders[0]).replace(' ', '_').replace('/', '_')
-                            filename_parts.append(f"SO-{so_clean}")
-                        
-                        # Add label type and timestamp
-                        label_type_clean = label_type.lower().replace(' ', '_')
-                        timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-                        
-                        filename = f"{label_type_clean}_{'_'.join(filename_parts)}_{timestamp}.zpl"
-                        
-                        st.download_button(
-                            label="📄 Download ZPL File",
-                            data=zpl_content,
-                            file_name=filename,
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                else:
-                    st.warning("No labels to print")
-                    st.info("Adjust filters or check data")
+        if not display_data.empty:
+            st.dataframe(display_data, use_container_width=True, height=400)
         else:
-            st.error("🚫 QR code libraries not available. Install with: pip install qrcode[pil]")
+            st.warning("No data to display with current selection")
+        
+        # Export and printing section
+        if not display_data.empty:
+            st.header("💾 Export Data")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # CSV download
+                csv_buffer = io.StringIO()
+                display_data.to_csv(csv_buffer, index=False)
+                csv_data = csv_buffer.getvalue()
+                
+                st.download_button(
+                    label="📄 Download CSV",
+                    data=csv_data,
+                    file_name=f"label_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # Summary stats with SAFE formatting
+                st.write("**Summary:**")
+                st.write(f"Total rows: {len(display_data):,}")
+                
+                # Use safe_sum and safe_count_nonzero for all calculations
+                total_packages = safe_sum(display_data['Package Quantity'])
+                total_case_labels = safe_sum(display_data['Case Labels Needed'])
+                total_bin_labels = safe_sum(display_data['Bin Labels Needed'])
+                unique_customers = display_data['Customer'].nunique()
+                
+                # Format numbers safely - ensure they're actually numbers
+                if total_packages > 0:
+                    st.write(f"Total packages: {float(total_packages):,.1f}")
+                if total_case_labels > 0:
+                    st.write(f"Total case labels needed: {int(total_case_labels):,}")
+                if total_bin_labels > 0:
+                    st.write(f"Total bin labels needed: {int(total_bin_labels):,}")
+                st.write(f"Unique customers: {unique_customers}")
+            
+            # Zebra Label Printing Section
+            if QR_AVAILABLE:
+                st.header("🖨️ Zebra Label Printing")
+                
+                col1, col2, col3 = st.columns([2, 2, 2])
+                
+                with col1:
+                    label_type = st.selectbox(
+                        "Label Type",
+                        ["Case Labels", "Bin Labels"],
+                        help="Choose whether to generate case or bin labels"
+                    )
+                
+                with col2:
+                    printer_connection = st.selectbox(
+                        "Connection",
+                        ["Network (IP)", "USB/Local"],
+                        help="How is your Zebra printer connected?"
+                    )
+                
+                with col3:
+                    if printer_connection == "Network (IP)":
+                        printer_ip = st.text_input(
+                            "Printer IP Address",
+                            placeholder="192.168.1.100",
+                            help="Enter the IP address of your Zebra printer"
+                        )
+                    else:
+                        st.info("USB printing requires additional setup")
+                        printer_ip = None
+                
+                # Fixed settings
+                label_width = 1.75
+                label_height = 0.875
+                selected_dpi = 300
+                
+                # Calculate labels for selected type
+                if label_type == "Case Labels":
+                    total_labels_needed = safe_sum(display_data['Case Labels Needed'])
+                    label_column = 'Case Labels Needed'
+                else:
+                    total_labels_needed = safe_sum(display_data['Bin Labels Needed'])
+                    label_column = 'Bin Labels Needed'
+                
+                # Show preview and printing options
+                col1, col2 = st.columns([3, 2])
+                
+                with col1:
+                    st.subheader(f"📋 {label_type} Preview")
+                    
+                    # Filter for products that need labels
+                    label_breakdown = display_data[display_data[label_column].apply(lambda x: safe_numeric(x) > 0)].copy()
+                    
+                    if len(label_breakdown) > 0:
+                        st.write(f"**{len(label_breakdown)} products** will generate **{int(total_labels_needed)} labels**")
+                        
+                        preview_df = label_breakdown[['Product Name', 'Customer', label_column]].head(10)
+                        st.dataframe(preview_df, use_container_width=True)
+                        
+                        if len(label_breakdown) > 10:
+                            st.write(f"... and {len(label_breakdown) - 10} more products")
+                    else:
+                        st.warning(f"No {label_type.lower()} needed for selected data")
+                
+                with col2:
+                    st.subheader("🎯 Print Options")
+                    
+                    if total_labels_needed > 0:
+                        st.metric("Total Labels", f"{int(total_labels_needed)}")
+                        
+                        # Generate ZPL preview
+                        if st.button("👀 Preview ZPL", help="Generate ZPL code preview"):
+                            if len(display_data) > 0:
+                                sample_row = display_data.iloc[0]
+                                qty_value = (sample_row.get('Case Quantity', '') if label_type == "Case Labels" 
+                                           else sample_row.get('Bin Quantity', ''))
+                                zpl_type = "Case" if label_type == "Case Labels" else "Bin"
+                                
+                                # Show QR debug info
+                                package_label_raw = sample_row.get('Package Label', '')
+                                qr_debug_data = sanitize_qr_data(package_label_raw)
+                                st.info(f"🔍 QR Debug - Raw: '{package_label_raw}' → QR Data: '{qr_debug_data}' (Length: {len(qr_debug_data)})")
+                                
+                                sample_zpl = generate_label_zpl(
+                                    product_name=sample_row.get('Product Name', ''),
+                                    batch_no=sample_row.get('Batch No', ''),
+                                    qty=qty_value,
+                                    pkg_qty=sample_row.get('Package Quantity', ''),
+                                    date_str=sample_row.get('Delivery Date', ''),
+                                    package_label=sample_row.get('Package Label', ''),
+                                    sell_by=sample_row.get('Sell by', ''),
+                                    invoice_no=sample_row.get('Invoice No', ''),
+                                    metrc_manifest=sample_row.get('METRC Manifest', ''),  # UPDATED: Use METRC instead of Sales Order
+                                    category=sample_row.get('Category', ''),
+                                    label_type=zpl_type,
+                                    label_width=label_width,
+                                    label_height=label_height,
+                                    dpi=selected_dpi
+                                )
+                                
+                                st.code(sample_zpl, language="text")
+                                
+                                width_dots = int(label_width * selected_dpi)
+                                height_dots = int(label_height * selected_dpi)
+                                st.info(f"Label: {label_width}\" × {label_height}\" = {width_dots} × {height_dots} dots at {selected_dpi} DPI")
+                        
+                        # Print buttons
+                        if printer_connection == "Network (IP)" and printer_ip:
+                            if st.button(f"🖨️ Print All {label_type}", type="primary"):
+                                with st.spinner(f"Generating and printing {int(total_labels_needed)} labels..."):
+                                    success_count = 0
+                                    error_messages = []
+                                    
+                                    labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, selected_dpi)
+                                    
+                                    for i, zpl in enumerate(labels, 1):
+                                        success, message = send_zpl_to_printer(zpl, printer_ip)
+                                        if success:
+                                            success_count += 1
+                                            if i % 10 == 0:
+                                                st.write(f"Printed {i}/{len(labels)} labels...")
+                                        else:
+                                            error_messages.append(message)
+                                            break
+                                    
+                                    if error_messages:
+                                        st.error(f"❌ Printing failed: {error_messages[0]}")
+                                        if success_count > 0:
+                                            st.info(f"✅ {success_count} labels printed before error")
+                                    else:
+                                        st.success(f"✅ Successfully printed {success_count} labels!")
+                        
+                        # Download ZPL file
+                        if st.button("📥 Download ZPL File"):
+                            labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, selected_dpi)
+                            zpl_content = "\n".join(labels)
+                            
+                            filename_parts = [f"{label_width}x{label_height}"]
+                            
+                            customers = display_data['Customer'].dropna().unique()
+                            if len(customers) == 1:
+                                customer_clean = str(customers[0]).replace(' ', '_').replace('/', '_')
+                                filename_parts.append(customer_clean)
+                            
+                            label_type_clean = label_type.lower().replace(' ', '_')
+                            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                            
+                            filename = f"{label_type_clean}_{'_'.join(filename_parts)}_{timestamp}.zpl"
+                            
+                            st.download_button(
+                                label="📄 Download ZPL File",
+                                data=zpl_content,
+                                file_name=filename,
+                                mime="text/plain",
+                                use_container_width=True
+                            )
+                    else:
+                        st.warning("No labels to print")
+            else:
+                st.error("🚫 QR code libraries not available. Install with: pip install qrcode[pil]")
     
-    # =============================================================================
-    # DATA OVERVIEW TAB
-    # =============================================================================
-    
+    # Data Overview Tab
     with tab2:
         st.header("📊 Data Overview")
         
-        # Summary metrics
+        # Summary metrics - ALL SAFE
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("🛒 Total Sales Orders", len(processed_df['Sales Order Number'].dropna().unique()))
@@ -934,10 +1202,9 @@ if st.session_state.processed_data is not None:
         with col4:
             st.metric("🏷️ Categories", len(processed_df['Category'].dropna().unique()))
         with col5:
-            # Show label calculation coverage
-            case_labels_coverage = processed_df['Case Labels Needed'].gt(0).sum()
-            bin_labels_coverage = processed_df['Bin Labels Needed'].gt(0).sum()
-            max_coverage = max(case_labels_coverage, bin_labels_coverage)
+            case_coverage = safe_count_nonzero(processed_df['Case Labels Needed'])
+            bin_coverage = safe_count_nonzero(processed_df['Bin Labels Needed'])
+            max_coverage = max(case_coverage, bin_coverage)
             coverage_pct = (max_coverage / len(processed_df) * 100) if len(processed_df) > 0 else 0
             st.metric("📊 Label Coverage", f"{coverage_pct:.0f}%")
         
@@ -951,118 +1218,61 @@ if st.session_state.processed_data is not None:
         customer_counts = processed_df['Customer'].value_counts().head(10)
         st.bar_chart(customer_counts)
         
-        # Label analysis
+        # Label analysis - ALL SAFE
         st.subheader("🏷️ Label Requirements Analysis")
         col1, col2 = st.columns(2)
         
         with col1:
-            # Case labels analysis
-            case_labels_data = processed_df[processed_df['Case Labels Needed'] > 0]
-            st.write(f"**Items requiring case labels:** {len(case_labels_data):,} of {len(processed_df):,}")
+            case_items = safe_count_nonzero(processed_df['Case Labels Needed'])
+            st.write(f"**Items requiring case labels:** {case_items:,} of {len(processed_df):,}")
             
-            if len(case_labels_data) > 0:
-                total_case_labels = case_labels_data['Case Labels Needed'].sum()
-                avg_case_labels = case_labels_data['Case Labels Needed'].mean()
-                st.write(f"**Total case labels needed:** {total_case_labels:,}")
-                st.write(f"**Average per item:** {avg_case_labels:.2f}")
+            if case_items > 0:
+                total_case = safe_sum(processed_df['Case Labels Needed'])
+                avg_case = total_case / case_items if case_items > 0 else 0
+                st.write(f"**Total case labels needed:** {int(total_case):,}")
+                st.write(f"**Average per item:** {avg_case:.2f}")
         
         with col2:
-            # Bin labels analysis
-            bin_labels_data = processed_df[processed_df['Bin Labels Needed'] > 0]
-            st.write(f"**Items requiring bin labels:** {len(bin_labels_data):,} of {len(processed_df):,}")
+            bin_items = safe_count_nonzero(processed_df['Bin Labels Needed'])
+            st.write(f"**Items requiring bin labels:** {bin_items:,} of {len(processed_df):,}")
             
-            if len(bin_labels_data) > 0:
-                total_bin_labels = bin_labels_data['Bin Labels Needed'].sum()
-                avg_bin_labels = bin_labels_data['Bin Labels Needed'].mean()
-                st.write(f"**Total bin labels needed:** {total_bin_labels:,}")
-                st.write(f"**Average per item:** {avg_bin_labels:.2f}")
+            if bin_items > 0:
+                total_bin = safe_sum(processed_df['Bin Labels Needed'])
+                avg_bin = total_bin / bin_items if bin_items > 0 else 0
+                st.write(f"**Total bin labels needed:** {int(total_bin):,}")
+                st.write(f"**Average per item:** {avg_bin:.2f}")
         
         # Full dataset view
         st.subheader("🔍 Full Dataset")
-        st.dataframe(processed_df, width='stretch')
+        st.dataframe(processed_df, use_container_width=True)
 
-# =============================================================================
-# WELCOME SCREEN
-# =============================================================================
 
+# Welcome screen
 else:
-    # Welcome screen when no data is loaded
     if not sales_order_file and not products_file and not packages_file:
         st.info("👈 Upload the required CSV files in the sidebar to get started")
         
-        # Show helpful information
         with st.expander("ℹ️ How it Works", expanded=True):
             st.markdown("""
             **📋 Upload** → **🔄 Process** → **🎯 Filter** → **🖨️ Print**
             
-            **Haven Cannabis Label Data Processor v1.0** processes your CSV files to create label printing data with calculated quantities and direct Zebra printer support.
-            
             **Key Features:**
             - 🔗 Links Sales Orders with Products and Packages
-            - 📊 Calculates Case Labels Needed = ⌈Package Quantity ÷ Case Quantity⌉
-            - 📊 Calculates Bin Labels Needed = ⌈Package Quantity ÷ Bin Quantity⌉
-            - 📅 Formats delivery dates as mm-dd-yy
+            - 📊 Calculates Case/Bin Labels Needed automatically
             - 🎯 Cascading filters by customer, order, invoice, and date
-            - 📋 Row selection for precise control
             - 🖨️ Direct Zebra printer support (ZD410, ZD621 at 300 DPI)
-            - 📄 ZPL generation for 1.75" x 0.875" labels
-            - 🔧 Smart layout with auto-wrapping and positioning
-            - 🔗 QR codes for package tracking
-            - 📊 Data overview and analytics
+            - 🔗 Complete QR codes for package tracking (no truncation)
             - 📥 CSV and ZPL export functionality
-            """)
-        
-        with st.expander("🖨️ Zebra Printer Setup"):
-            st.markdown("""
-            **Supported Printers:** Zebra ZD410, ZD621 (300 DPI)
             
-            **Current Label Specifications:**
-            - Size: 1.75" wide × 0.875" high
-            - Resolution: 300 DPI
-            - Formats: Case Labels and Bin Labels
-            
-            **Connection Options:**
-            - **Network (Recommended):** Enter printer IP address
-            - **USB:** Requires additional driver setup
-            
-            **Label Content:**
-            - Product Name (auto-wrapping for long names)
-            - Batch Number
-            - Quantity (Case Qty or Bin Qty)
-            - Package Quantity  
-            - Date (formatted as M/D/YYYY)
-            - Sell By Date
-            - QR Code with Package Label data
-            
-            **Features:**
-            - **Smart layout:** Text positioning optimized for 1.75" × 0.875" labels
-            - **Dynamic scaling:** Fonts and spacing calculated for 300 DPI
-            - **QR positioning:** Automatically placed in optimal location
-            - **Product name wrapping:** Long names split across two lines
-            """)
-            
-        with st.expander("📁 CSV File Requirements"):
-            st.markdown("""
-            **Sales Order CSV:** *(Required)*
-            - Headers start on line 4 (first 3 lines skipped automatically)
-            - Required columns: Product Id, Product, Category, Package Batch Number, Package Label, Quantity, Customer, Invoice Numbers, Metrc Manifest Number, Delivery Date, Order Number
-            
-            **Products CSV:** *(Required)*  
-            - Required columns: ID, Units Per Case, Bin Quantity (Retail)
-            - Used for calculating label quantities
-            
-            **Package List CSV:** *(Required)*
-            - Required columns: Package Label, Sell By
-            - Links package information to sales orders
-            
-            **Data Linking:**
-            - Product Id (Sales Order) ↔ ID (Products)
-            - Package Label (Sales Order) ↔ Package Label (Packages)
+            **Recent Fixes:**
+            - ✅ QR codes preserve complete package label data
+            - ✅ Package label text properly positioned
+            - ✅ Robust numeric handling for all calculations
+            - ✅ No more string formatting errors
             """)
     
     elif sales_order_file and products_file and packages_file:
         st.info("👈 Click the 'Process Data' button in the sidebar to analyze your files")
-        st.info("🏷️ All files uploaded - ready to process label data and print to Zebra printers")
     
     else:
         missing_files = []
