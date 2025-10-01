@@ -210,12 +210,7 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
         st.session_state.products_data = products_df
         st.session_state.packages_data = packages_df
         
-        # Debug: Check what columns we actually have
-        st.write("**Debug - Products columns:**", products_df.columns.tolist())
-        st.write("**Debug - Sales Order columns:**", sales_order_df.columns.tolist())
-        st.write("**Debug - Packages columns:**", packages_df.columns.tolist())
-        
-        # Try to find the ID column (might be 'ID', 'Id', or 'Product ID')
+        # Find the ID column (might be 'ID', 'Id', or 'Product ID')
         products_id_col = None
         for col in ['ID', 'Id', 'Product ID', 'Product Id', 'id']:
             if col in products_df.columns:
@@ -286,8 +281,6 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
         
     except Exception as e:
         st.error(f"Error processing data: {str(e)}")
-        import traceback
-        st.error(f"Full traceback: {traceback.format_exc()}")
         return None
 
 # =============================================================================
