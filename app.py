@@ -1,20 +1,9 @@
 """
-DC Retail Case & Bin Label Generator
-===================================
+DC Retail Case & Bin Label Generator - Cloud-Safe Version
+========================================================
 
-A Streamlit application for processing CSV files and generating Zebra printer labels.
-Supports direct printing to Zebra ZD410/ZD621 printers via network connection.
-Handles partial case/bin quantities correctly.
-
-Author: DC Retail
-Version: 2.2.1
-
-VERSION HISTORY:
-- v2.2.1 (2025-09-29): Fixed product name wrapping on large labels, added version display
-- v2.2.0 (2025-09-29): Added 4" × 2" label size with proportional scaling
-- v2.1.0 (2025-09-29): Hybrid positioning (batch follows product, rest fixed), Z-A sorting
-- v2.0.0 (2025-09-27): Complete rewrite with partial quantity handling, individual items support
-- v1.0.0 (2025): Initial release
+Version 2.3.1 - Optimized for Streamlit Cloud deployment
+Fixes CSP issues with Browser Print integration
 """
 
 import streamlit as st
@@ -24,9 +13,12 @@ import math
 import socket
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
+import streamlit.components.v1 as components
+import json
+import base64
 
 # Version
-VERSION = "2.2.1"
+VERSION = "2.3.1"
 
 # Import QR code libraries with error handling
 try:
@@ -64,7 +56,161 @@ def initialize_session_state():
 initialize_session_state()
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# BROWSER PRINT INTEGRATION (CLOUD-SAFE VERSION)
+# =============================================================================
+
+def create_browser_print_launcher(zpl_data: str, label_count: int) -> None:
+    """Create a launcher for Browser Print that works with Streamlit Cloud CSP"""
+    
+    # Encode ZPL data as base64 for safe transport
+    b64_zpl = base64.b64encode(zpl_data.encode()).decode()
+    
+    html_content = f"""
+    <div style="padding: 20px; border: 2px solid #4CAF50; border-radius: 10px; background-color: #f9f9f9;">
+        <h3 style="color: #333; margin-top: 0;">🖨️ Ready to Print {label_count} Labels</h3>
+        
+        <p style="color: #666;">Choose your printing method:</p>
+        
+        <div style="display: flex; gap: 10px; margin-top: 15px;">
+            <!-- Method 1: Direct Browser Print (if installed) -->
+            <button onclick="sendToBrowserPrint()" style="
+                background-color: #4CAF50;
+                color: white;
+                padding: 12px 20px;
+                font-size: 16px;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                flex: 1;
+            ">
+                🚀 Send to Browser Print
+            </button>
+            
+            <!-- Method 2: Copy to Clipboard -->
+            <button onclick="copyToClipboard()" style="
+                background-color: #2196F3;
+                color: white;
+                padding: 12px 20px;
+                font-size: 16px;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                flex: 1;
+            ">
+                📋 Copy ZPL to Clipboard
+            </button>
+        </div>
+        
+        <div id="status" style="margin-top: 15px; padding: 10px; display: none;"></div>
+        
+        <details style="margin-top: 20px;">
+            <summary style="cursor: pointer; color: #666;">ℹ️ Help & Instructions</summary>
+            <div style="margin-top: 10px; padding: 10px; background-color: #fff; border-radius: 5px;">
+                <strong>Option 1: Browser Print (Recommended)</strong>
+                <ol style="margin: 10px 0;">
+                    <li>Install <a href="https://www.zebra.com/us/en/support-downloads/software/printer-software/browser-print.html" target="_blank">Zebra Browser Print</a></li>
+                    <li>Make sure it's running (check system tray)</li>
+                    <li>Click "Send to Browser Print"</li>
+                </ol>
+                
+                <strong>Option 2: Copy & Paste</strong>
+                <ol style="margin: 10px 0;">
+                    <li>Click "Copy ZPL to Clipboard"</li>
+                    <li>Open Zebra Setup Utilities or Notepad</li>
+                    <li>Paste and send to printer</li>
+                </ol>
+            </div>
+        </details>
+    </div>
+    
+    <script>
+        // Store the ZPL data
+        const zplData = atob('{b64_zpl}');
+        
+        function sendToBrowserPrint() {{
+            const statusDiv = document.getElementById('status');
+            statusDiv.style.display = 'block';
+            statusDiv.style.backgroundColor = '#fff3cd';
+            statusDiv.style.color = '#856404';
+            statusDiv.innerHTML = '⏳ Attempting to connect to Browser Print...';
+            
+            // Try to open Browser Print endpoint
+            const printWindow = window.open('http://localhost:9100', 'browserPrint', 'width=1,height=1,left=-100,top=-100');
+            
+            if (printWindow) {{
+                setTimeout(() => {{
+                    try {{
+                        // Try to send data via postMessage
+                        printWindow.postMessage({{type: 'print', zpl: zplData}}, 'http://localhost:9100');
+                        
+                        // Also try form submission as fallback
+                        const form = document.createElement('form');
+                        form.method = 'POST';
+                        form.action = 'http://localhost:9100/print';
+                        form.target = 'browserPrint';
+                        
+                        const input = document.createElement('textarea');
+                        input.name = 'zpl';
+                        input.value = zplData;
+                        form.appendChild(input);
+                        
+                        document.body.appendChild(form);
+                        form.submit();
+                        document.body.removeChild(form);
+                        
+                        statusDiv.style.backgroundColor = '#d4edda';
+                        statusDiv.style.color = '#155724';
+                        statusDiv.innerHTML = '✅ Sent to Browser Print! Check your printer.';
+                        
+                        setTimeout(() => {{
+                            printWindow.close();
+                        }}, 2000);
+                    }} catch (e) {{
+                        statusDiv.style.backgroundColor = '#f8d7da';
+                        statusDiv.style.color = '#721c24';
+                        statusDiv.innerHTML = '❌ Could not connect. Is Browser Print installed and running?';
+                        printWindow.close();
+                    }}
+                }}, 1000);
+            }} else {{
+                statusDiv.style.backgroundColor = '#f8d7da';
+                statusDiv.style.color = '#721c24';
+                statusDiv.innerHTML = '❌ Could not open Browser Print. Please check if it is installed.';
+            }}
+        }}
+        
+        function copyToClipboard() {{
+            const statusDiv = document.getElementById('status');
+            
+            navigator.clipboard.writeText(zplData).then(() => {{
+                statusDiv.style.display = 'block';
+                statusDiv.style.backgroundColor = '#d4edda';
+                statusDiv.style.color = '#155724';
+                statusDiv.innerHTML = '✅ ZPL copied to clipboard! Paste it into Zebra Setup Utilities.';
+            }}).catch(() => {{
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = zplData;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                
+                statusDiv.style.display = 'block';
+                statusDiv.style.backgroundColor = '#d4edda';
+                statusDiv.style.color = '#155724';
+                statusDiv.innerHTML = '✅ ZPL copied to clipboard! Paste it into Zebra Setup Utilities.';
+            }});
+        }}
+    </script>
+    """
+    
+    components.html(html_content, height=300)
+
+# =============================================================================
+# UTILITY FUNCTIONS (keeping all the same from original)
 # =============================================================================
 
 def safe_numeric(value, default=0):
@@ -113,9 +259,10 @@ def calculate_individual_quantities(package_qty: float, container_qty: float) ->
     
     return quantities
 
-# =============================================================================
-# FILE LOADING
-# =============================================================================
+# [Rest of the utility functions remain the same...]
+# [File loading functions remain the same...]
+# [Data processing functions remain the same...]
+# [Label generation functions remain the same...]
 
 def load_sales_order_csv(uploaded_file) -> Optional[pd.DataFrame]:
     """Load Sales Order CSV with special handling for metadata lines."""
@@ -158,10 +305,6 @@ def format_delivery_date(date_series: pd.Series) -> pd.Series:
         return date_series.dt.strftime('%m-%d-%y')
     except Exception:
         return date_series.astype(str)
-
-# =============================================================================
-# DATA PROCESSING
-# =============================================================================
 
 def calculate_labels_needed(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate how many case and bin labels are needed for each row."""
@@ -283,10 +426,6 @@ def merge_data_sources(sales_order_df: pd.DataFrame,
         st.error(f"Error processing data: {str(e)}")
         return None
 
-# =============================================================================
-# LABEL GENERATION
-# =============================================================================
-
 def sanitize_qr_data(package_label) -> str:
     """Preserve complete package label for QR code."""
     if pd.isna(package_label) or package_label is None:
@@ -332,8 +471,7 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
     
     qr_data = sanitize_qr_data(package_label)
     
-    # Handle product name wrapping - keep character limit CONSTANT regardless of scale
-    # Larger fonts with bigger labels still need same character limits to fit properly
+    # Handle product name wrapping
     product_name = str(product_name) if pd.notna(product_name) else ""
     product_lines = []
     char_limit = 35  # Keep constant - don't scale this
@@ -577,10 +715,6 @@ def generate_filename(data: pd.DataFrame, label_type: str, label_width: float,
     
     return filename
 
-# =============================================================================
-# PRINTER FUNCTIONS
-# =============================================================================
-
 def send_zpl_to_printer(zpl_data: str, printer_ip: str, 
                        printer_port: int = 9100) -> Tuple[bool, str]:
     """Send ZPL data to Zebra printer via network"""
@@ -607,7 +741,7 @@ def send_zpl_to_printer(zpl_data: str, printer_ip: str,
         return False, f"Network error: {str(e)}"
 
 # =============================================================================
-# STREAMLIT UI
+# STREAMLIT UI - Main Application
 # =============================================================================
 
 st.sidebar.header("📊 Data Sources")
@@ -665,7 +799,7 @@ if st.session_state.processed_data is not None:
     with tab1:
         st.header("🎯 Generate Labels")
         
-        # Filters - Order: Customers, Delivery Dates, Sales Orders, Invoices
+        # Filters
         col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
         
         with col1:
@@ -763,16 +897,14 @@ if st.session_state.processed_data is not None:
             with col2:
                 print_via = st.selectbox(
                     "Print Via",
-                    ["Download ZPL", "Network Printer"],
+                    ["Browser Print (Cloud)", "Download ZPL", "Network Printer (Local)"],
                     help="How do you want to output the labels?"
                 )
             
             with col3:
-                # Label size dropdown with TWO options
                 label_size_options = ["1.75\" × 0.875\" (300 DPI)", "4\" × 2\" (203 DPI)"]
                 selected_size = st.selectbox("Label Size", label_size_options)
                 
-                # Parse selected size
                 if "4\" × 2\"" in selected_size:
                     label_width = 4.0
                     label_height = 2.0
@@ -801,7 +933,40 @@ if st.session_state.processed_data is not None:
                 
                 st.markdown("### Actions")
                 
-                if print_via == "Network Printer":
+                # Different UI based on print method
+                if print_via == "Browser Print (Cloud)":
+                    if st.button(f"🖨️ Generate {int(total_labels)} Labels for Browser Print", 
+                               type="primary", use_container_width=True):
+                        try:
+                            with st.spinner(f"Generating {int(total_labels)} labels..."):
+                                labels = generate_labels_for_dataset(display_data, label_type, 
+                                                                   label_width, label_height, dpi)
+                                
+                                if not labels:
+                                    st.error("No labels were generated")
+                                else:
+                                    combined_zpl = "\n".join(labels)
+                                    st.success(f"✅ Generated {len(labels)} labels!")
+                                    
+                                    # Use the cloud-safe launcher
+                                    create_browser_print_launcher(combined_zpl, len(labels))
+                                    
+                                    # Also provide direct download option
+                                    st.markdown("### Alternative: Direct Download")
+                                    filename = generate_filename(display_data, label_type, 
+                                                               label_width, label_height, dpi)
+                                    st.download_button(
+                                        label=f"💾 Download ZPL File",
+                                        data=combined_zpl,
+                                        file_name=filename,
+                                        mime="text/plain",
+                                        use_container_width=True
+                                    )
+                                    
+                        except Exception as e:
+                            st.error(f"Error during generation: {str(e)}")
+                
+                elif print_via == "Network Printer (Local)":
                     col1, col2 = st.columns([1, 1])
                     
                     with col1:
@@ -815,7 +980,8 @@ if st.session_state.processed_data is not None:
                             if st.button(f"🖨️ Print {int(total_labels)} Labels", type="primary", use_container_width=True):
                                 try:
                                     with st.spinner(f"Printing {int(total_labels)} labels..."):
-                                        labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, dpi)
+                                        labels = generate_labels_for_dataset(display_data, label_type, 
+                                                                           label_width, label_height, dpi)
                                         
                                         if not labels:
                                             st.error("No labels were generated")
@@ -847,7 +1013,8 @@ if st.session_state.processed_data is not None:
                             try:
                                 if len(display_data) > 0:
                                     sample_row = display_data.iloc[0]
-                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, label_width, label_height, dpi)
+                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, 
+                                                                              label_width, label_height, dpi)
                                     
                                     if sample_labels:
                                         st.code(sample_labels[0], language="text")
@@ -858,20 +1025,22 @@ if st.session_state.processed_data is not None:
                             except Exception as e:
                                 st.error(f"Error generating preview: {str(e)}")
                 
-                else:
+                else:  # Download ZPL
                     col1, col2 = st.columns([1, 1])
                     
                     with col1:
                         if st.button(f"📥 Generate {int(total_labels)} Labels", type="primary", use_container_width=True):
                             try:
                                 with st.spinner("Generating ZPL..."):
-                                    labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, dpi)
+                                    labels = generate_labels_for_dataset(display_data, label_type, 
+                                                                       label_width, label_height, dpi)
                                     
                                     if not labels:
                                         st.error("No labels were generated")
                                     else:
                                         zpl_content = "\n".join(labels)
-                                        filename = generate_filename(display_data, label_type, label_width, label_height, dpi)
+                                        filename = generate_filename(display_data, label_type, 
+                                                                   label_width, label_height, dpi)
                                         
                                         st.session_state[f'zpl_content_{label_type}'] = zpl_content
                                         st.session_state[f'zpl_filename_{label_type}'] = filename
@@ -883,7 +1052,8 @@ if st.session_state.processed_data is not None:
                             try:
                                 if len(display_data) > 0:
                                     sample_row = display_data.iloc[0]
-                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, label_width, label_height, dpi)
+                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, 
+                                                                              label_width, label_height, dpi)
                                     
                                     if sample_labels:
                                         st.code(sample_labels[0], language="text")
@@ -967,8 +1137,14 @@ else:
             - Links Sales Orders with Products and Packages
             - Calculates Case/Bin Labels automatically with partial quantity support
             - Multiple label sizes: 1.75" × 0.875" (300 DPI) and 4" × 2" (203 DPI)
+            - **NEW: Browser Print support for cloud printing!**
             - Direct Zebra printer support or ZPL download
             - Smart file naming with label specs, customer, invoice, and order info
+            
+            **Printing Options:**
+            - **Browser Print (Cloud):** Print directly from your browser to local Zebra printers
+            - **Network Printer (Local):** Direct IP connection when running locally
+            - **Download ZPL:** Save files for manual printing or batch processing
             
             **Label Size Support:**
             - Small labels: 1.75" × 0.875" at 300 DPI (ZD410)
