@@ -3,13 +3,14 @@ DC Retail Case & Bin Label Generator
 ===================================
 
 A Streamlit application for processing CSV files and generating Zebra printer labels.
-Supports direct printing to Zebra ZD410/ZD621 printers via network connection.
+Supports direct printing to Zebra ZD410/ZD621 printers via network connection and Browser Print.
 Handles partial case/bin quantities correctly.
 
 Author: DC Retail
-Version: 2.2.1
+Version: 2.3.0
 
 VERSION HISTORY:
+- v2.3.0 (2025-10-20): Added Zebra Browser Print integration for cloud printing
 - v2.2.1 (2025-09-29): Fixed product name wrapping on large labels, added version display
 - v2.2.0 (2025-09-29): Added 4" × 2" label size with proportional scaling
 - v2.1.0 (2025-09-29): Hybrid positioning (batch follows product, rest fixed), Z-A sorting
@@ -24,9 +25,12 @@ import math
 import socket
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
+import streamlit.components.v1 as components
+import json
+import base64
 
 # Version
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 
 # Import QR code libraries with error handling
 try:
@@ -55,13 +59,176 @@ st.markdown("**DC Retail** | Process CSV files for label printing with calculate
 
 def initialize_session_state():
     """Initialize session state variables"""
-    session_vars = ['processed_data', 'sales_order_data', 'products_data', 'packages_data']
+    session_vars = ['processed_data', 'sales_order_data', 'products_data', 'packages_data', 
+                    'browser_print_available', 'selected_printer']
     
     for var in session_vars:
         if var not in st.session_state:
             st.session_state[var] = None
 
 initialize_session_state()
+
+# =============================================================================
+# BROWSER PRINT INTEGRATION
+# =============================================================================
+
+def generate_browser_print_script() -> str:
+    """Generate the Browser Print detection and setup script"""
+    return """
+    <script type="text/javascript">
+    // Browser Print detection and initialization
+    window.BrowserPrintAvailable = false;
+    window.SelectedPrinter = null;
+    window.AvailablePrinters = [];
+    
+    // Load Browser Print script dynamically
+    function loadBrowserPrint() {
+        // First check if Browser Print is running by trying to access it
+        fetch('http://localhost:9100/available', {mode: 'no-cors'})
+            .then(function() {
+                // If we get here, Browser Print is likely running
+                loadBrowserPrintScript();
+            })
+            .catch(function() {
+                console.log('Browser Print not detected');
+                window.parent.postMessage({
+                    type: 'browserPrintStatus',
+                    available: false,
+                    message: 'Browser Print not detected. Please install and run Zebra Browser Print.'
+                }, '*');
+            });
+    }
+    
+    function loadBrowserPrintScript() {
+        var script = document.createElement('script');
+        script.src = 'http://localhost:9100/JSPrintClient.js';
+        script.onload = function() {
+            initializeBrowserPrint();
+        };
+        script.onerror = function() {
+            console.error('Failed to load Browser Print script');
+            window.parent.postMessage({
+                type: 'browserPrintStatus',
+                available: false,
+                message: 'Failed to load Browser Print. Ensure it is running.'
+            }, '*');
+        };
+        document.head.appendChild(script);
+    }
+    
+    function initializeBrowserPrint() {
+        if (typeof BrowserPrint !== 'undefined') {
+            window.BrowserPrintAvailable = true;
+            
+            // Get available printers
+            BrowserPrint.getDefaultDevice('printer', function(device) {
+                if (device && device.name) {
+                    window.SelectedPrinter = device;
+                    
+                    // Get all local printers
+                    BrowserPrint.getLocalDevices(function(printers) {
+                        window.AvailablePrinters = printers;
+                        
+                        // Send status to Streamlit
+                        window.parent.postMessage({
+                            type: 'browserPrintStatus',
+                            available: true,
+                            defaultPrinter: device.name,
+                            printers: printers.map(p => p.name)
+                        }, '*');
+                    }, function() {
+                        window.parent.postMessage({
+                            type: 'browserPrintStatus',
+                            available: true,
+                            defaultPrinter: device.name,
+                            printers: [device.name]
+                        }, '*');
+                    });
+                }
+            }, function(error) {
+                console.error('Browser Print error:', error);
+                window.parent.postMessage({
+                    type: 'browserPrintStatus',
+                    available: false,
+                    message: 'Browser Print detected but no printers found.'
+                }, '*');
+            });
+        }
+    }
+    
+    // Function to print ZPL
+    window.printZPL = function(zplData, printerName) {
+        if (!window.BrowserPrintAvailable) {
+            alert('Browser Print is not available. Please install Zebra Browser Print.');
+            return;
+        }
+        
+        // Find the printer
+        var selectedPrinter = window.SelectedPrinter;
+        if (printerName && window.AvailablePrinters.length > 0) {
+            var found = window.AvailablePrinters.find(p => p.name === printerName);
+            if (found) selectedPrinter = found;
+        }
+        
+        if (!selectedPrinter) {
+            alert('No printer selected or available.');
+            return;
+        }
+        
+        // Send ZPL to printer
+        selectedPrinter.send(zplData, 
+            function() {
+                window.parent.postMessage({
+                    type: 'printComplete',
+                    success: true,
+                    message: 'Labels sent to printer successfully!'
+                }, '*');
+            },
+            function(error) {
+                console.error('Print error:', error);
+                window.parent.postMessage({
+                    type: 'printComplete',
+                    success: false,
+                    message: 'Print failed: ' + error
+                }, '*');
+            }
+        );
+    };
+    
+    // Initialize on load
+    window.addEventListener('load', loadBrowserPrint);
+    
+    // Listen for print commands from Streamlit
+    window.addEventListener('message', function(event) {
+        if (event.data.type === 'printZPL') {
+            window.printZPL(event.data.zplData, event.data.printerName);
+        }
+    });
+    </script>
+    """
+
+def inject_browser_print_detector():
+    """Inject the Browser Print detection script into the page"""
+    components.html(generate_browser_print_script(), height=0)
+
+def send_to_browser_print(zpl_data: str, printer_name: Optional[str] = None) -> None:
+    """Send ZPL data to Browser Print via JavaScript injection"""
+    
+    # Escape the ZPL data for JavaScript
+    escaped_zpl = zpl_data.replace('\\', '\\\\').replace('`', '\\`').replace('"', '\\"')
+    
+    print_script = f"""
+    <script>
+    // Send print command to parent window
+    window.parent.postMessage({{
+        type: 'printZPL',
+        zplData: `{escaped_zpl}`,
+        printerName: {'null' if not printer_name else f'"{printer_name}"'}
+    }}, '*');
+    </script>
+    """
+    
+    components.html(print_script, height=0)
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -610,6 +777,9 @@ def send_zpl_to_printer(zpl_data: str, printer_ip: str,
 # STREAMLIT UI
 # =============================================================================
 
+# Inject Browser Print detector at the start
+inject_browser_print_detector()
+
 st.sidebar.header("📊 Data Sources")
 
 st.sidebar.subheader("📋 Sales Order")
@@ -763,7 +933,7 @@ if st.session_state.processed_data is not None:
             with col2:
                 print_via = st.selectbox(
                     "Print Via",
-                    ["Download ZPL", "Network Printer"],
+                    ["Browser Print (Cloud)", "Download ZPL", "Network Printer (Local)"],
                     help="How do you want to output the labels?"
                 )
             
@@ -801,7 +971,69 @@ if st.session_state.processed_data is not None:
                 
                 st.markdown("### Actions")
                 
-                if print_via == "Network Printer":
+                # Different UI based on print method
+                if print_via == "Browser Print (Cloud)":
+                    # Browser Print Interface
+                    st.info("🔌 **Zebra Browser Print** enables direct printing from your browser to local printers")
+                    
+                    with st.expander("📋 Setup Instructions", expanded=False):
+                        st.markdown("""
+                        **One-time setup:**
+                        1. Download and install [Zebra Browser Print](https://www.zebra.com/us/en/support-downloads/software/printer-software/browser-print.html)
+                        2. Ensure your Zebra printer is connected (USB or network)
+                        3. Browser Print will automatically detect your printer
+                        4. Click the Print button below to send labels directly to your printer
+                        
+                        **Troubleshooting:**
+                        - Make sure Browser Print is running (check system tray)
+                        - Refresh this page after installing Browser Print
+                        - For network printers, ensure printer is on the same network
+                        """)
+                    
+                    col1, col2 = st.columns([1, 1])
+                    
+                    with col1:
+                        if st.button(f"🖨️ Print {int(total_labels)} Labels via Browser Print", 
+                                   type="primary", use_container_width=True):
+                            try:
+                                with st.spinner(f"Sending {int(total_labels)} labels to printer..."):
+                                    labels = generate_labels_for_dataset(display_data, label_type, 
+                                                                       label_width, label_height, dpi)
+                                    
+                                    if not labels:
+                                        st.error("No labels were generated")
+                                    else:
+                                        # Combine all labels into one ZPL string
+                                        combined_zpl = "\n".join(labels)
+                                        
+                                        # Send to Browser Print
+                                        send_to_browser_print(combined_zpl)
+                                        
+                                        st.success(f"Sent {len(labels)} labels to Browser Print")
+                                        st.info("Check your printer - labels should be printing!")
+                            except Exception as e:
+                                st.error(f"Error during printing: {str(e)}")
+                    
+                    with col2:
+                        if st.button("👀 Preview Sample ZPL", use_container_width=True):
+                            try:
+                                if len(display_data) > 0:
+                                    sample_row = display_data.iloc[0]
+                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, 
+                                                                              label_width, label_height, dpi)
+                                    
+                                    if sample_labels:
+                                        with st.expander("ZPL Preview", expanded=True):
+                                            st.code(sample_labels[0], language="text")
+                                        if len(sample_labels) > 1:
+                                            st.info(f"This product generates {len(sample_labels)} labels")
+                                    else:
+                                        st.warning("No labels generated for the first product")
+                            except Exception as e:
+                                st.error(f"Error generating preview: {str(e)}")
+                
+                elif print_via == "Network Printer (Local)":
+                    # Network Printer Interface (existing)
                     col1, col2 = st.columns([1, 1])
                     
                     with col1:
@@ -815,7 +1047,8 @@ if st.session_state.processed_data is not None:
                             if st.button(f"🖨️ Print {int(total_labels)} Labels", type="primary", use_container_width=True):
                                 try:
                                     with st.spinner(f"Printing {int(total_labels)} labels..."):
-                                        labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, dpi)
+                                        labels = generate_labels_for_dataset(display_data, label_type, 
+                                                                           label_width, label_height, dpi)
                                         
                                         if not labels:
                                             st.error("No labels were generated")
@@ -847,7 +1080,8 @@ if st.session_state.processed_data is not None:
                             try:
                                 if len(display_data) > 0:
                                     sample_row = display_data.iloc[0]
-                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, label_width, label_height, dpi)
+                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, 
+                                                                              label_width, label_height, dpi)
                                     
                                     if sample_labels:
                                         st.code(sample_labels[0], language="text")
@@ -858,20 +1092,22 @@ if st.session_state.processed_data is not None:
                             except Exception as e:
                                 st.error(f"Error generating preview: {str(e)}")
                 
-                else:
+                else:  # Download ZPL
                     col1, col2 = st.columns([1, 1])
                     
                     with col1:
                         if st.button(f"📥 Generate {int(total_labels)} Labels", type="primary", use_container_width=True):
                             try:
                                 with st.spinner("Generating ZPL..."):
-                                    labels = generate_labels_for_dataset(display_data, label_type, label_width, label_height, dpi)
+                                    labels = generate_labels_for_dataset(display_data, label_type, 
+                                                                       label_width, label_height, dpi)
                                     
                                     if not labels:
                                         st.error("No labels were generated")
                                     else:
                                         zpl_content = "\n".join(labels)
-                                        filename = generate_filename(display_data, label_type, label_width, label_height, dpi)
+                                        filename = generate_filename(display_data, label_type, 
+                                                                   label_width, label_height, dpi)
                                         
                                         st.session_state[f'zpl_content_{label_type}'] = zpl_content
                                         st.session_state[f'zpl_filename_{label_type}'] = filename
@@ -883,7 +1119,8 @@ if st.session_state.processed_data is not None:
                             try:
                                 if len(display_data) > 0:
                                     sample_row = display_data.iloc[0]
-                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, label_width, label_height, dpi)
+                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, 
+                                                                              label_width, label_height, dpi)
                                     
                                     if sample_labels:
                                         st.code(sample_labels[0], language="text")
@@ -967,8 +1204,14 @@ else:
             - Links Sales Orders with Products and Packages
             - Calculates Case/Bin Labels automatically with partial quantity support
             - Multiple label sizes: 1.75" × 0.875" (300 DPI) and 4" × 2" (203 DPI)
+            - **NEW: Browser Print support for cloud printing!**
             - Direct Zebra printer support or ZPL download
             - Smart file naming with label specs, customer, invoice, and order info
+            
+            **Printing Options:**
+            - **Browser Print (Cloud):** Print directly from your browser to local Zebra printers
+            - **Network Printer (Local):** Direct IP connection when running locally
+            - **Download ZPL:** Save files for manual printing or batch processing
             
             **Label Size Support:**
             - Small labels: 1.75" × 0.875" at 300 DPI (ZD410)
