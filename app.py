@@ -2,8 +2,12 @@
 DC Retail Case & Bin Label Generator - Cloud-Safe Version
 ========================================================
 
-Version 2.3.1 - Optimized for Streamlit Cloud deployment
-Fixes CSP issues with Browser Print integration
+Version 2.4.0 - Optimized for Streamlit Cloud deployment
+- Fixes CSP issues with Browser Print integration
+- Default to Bin labels, Download ZPL, and 4" × 2" size
+- Labels grouped by Invoice, then sorted A-Z by Product Name
+
+Author: DC Retail
 """
 
 import streamlit as st
@@ -18,7 +22,7 @@ import json
 import base64
 
 # Version
-VERSION = "2.3.1"
+VERSION = "2.4.0"
 
 # Import QR code libraries with error handling
 try:
@@ -648,21 +652,26 @@ def generate_all_labels_for_row(row: pd.Series, label_type: str,
 
 def generate_labels_for_dataset(df: pd.DataFrame, label_type: str, 
                                label_width: float, label_height: float, dpi: int) -> List[str]:
-    """Generate all labels for entire dataset, sorted Z-A by Product Name"""
+    """Generate all labels for entire dataset, grouped by Invoice then sorted A-Z by Product Name"""
     all_labels = []
     
-    # Sort Z-A (descending)
-    df_sorted = df.sort_values('Product Name', ascending=False, na_position='last')
+    # First, sort by Invoice No (nulls last), then by Product Name A-Z
+    df_sorted = df.sort_values(['Invoice No', 'Product Name'], 
+                               ascending=[True, True], 
+                               na_position='last')
     
-    for _, row in df_sorted.iterrows():
-        if label_type == "Case" and safe_numeric(row.get('Case Labels Needed', 0)) > 0:
-            row_labels = generate_all_labels_for_row(row, "Case", label_width, label_height, dpi)
-            if row_labels:
-                all_labels.extend(row_labels)
-        elif label_type == "Bin" and safe_numeric(row.get('Bin Labels Needed', 0)) > 0:
-            row_labels = generate_all_labels_for_row(row, "Bin", label_width, label_height, dpi)
-            if row_labels:
-                all_labels.extend(row_labels)
+    # Group by Invoice No to keep invoice items together
+    for invoice_no, invoice_group in df_sorted.groupby('Invoice No', dropna=False):
+        # Within each invoice group, items are already sorted A-Z by Product Name
+        for _, row in invoice_group.iterrows():
+            if label_type == "Case" and safe_numeric(row.get('Case Labels Needed', 0)) > 0:
+                row_labels = generate_all_labels_for_row(row, "Case", label_width, label_height, dpi)
+                if row_labels:
+                    all_labels.extend(row_labels)
+            elif label_type == "Bin" and safe_numeric(row.get('Bin Labels Needed', 0)) > 0:
+                row_labels = generate_all_labels_for_row(row, "Bin", label_width, label_height, dpi)
+                if row_labels:
+                    all_labels.extend(row_labels)
     
     return all_labels
 
@@ -890,19 +899,19 @@ if st.session_state.processed_data is not None:
             with col1:
                 label_type = st.selectbox(
                     "Label Type", 
-                    ["Case", "Bin"],
+                    ["Bin", "Case"],  # Bin is now first (default)
                     help="Choose which type of labels to generate"
                 )
             
             with col2:
                 print_via = st.selectbox(
                     "Print Via",
-                    ["Browser Print (Cloud)", "Download ZPL", "Network Printer (Local)"],
+                    ["Download ZPL", "Browser Print (Cloud)", "Network Printer (Local)"],  # Download ZPL is now first (default)
                     help="How do you want to output the labels?"
                 )
             
             with col3:
-                label_size_options = ["1.75\" × 0.875\" (300 DPI)", "4\" × 2\" (203 DPI)"]
+                label_size_options = ["4\" × 2\" (203 DPI)", "1.75\" × 0.875\" (300 DPI)"]  # 4" × 2" is now first (default)
                 selected_size = st.selectbox("Label Size", label_size_options)
                 
                 if "4\" × 2\"" in selected_size:
@@ -934,7 +943,62 @@ if st.session_state.processed_data is not None:
                 st.markdown("### Actions")
                 
                 # Different UI based on print method
-                if print_via == "Browser Print (Cloud)":
+                if print_via == "Download ZPL":  # This is now the default/first option
+                    col1, col2 = st.columns([1, 1])
+                    
+                    with col1:
+                        if st.button(f"📥 Generate {int(total_labels)} Labels", type="primary", use_container_width=True):
+                            try:
+                                with st.spinner("Generating ZPL..."):
+                                    labels = generate_labels_for_dataset(display_data, label_type, 
+                                                                       label_width, label_height, dpi)
+                                    
+                                    if not labels:
+                                        st.error("No labels were generated")
+                                    else:
+                                        zpl_content = "\n".join(labels)
+                                        filename = generate_filename(display_data, label_type, 
+                                                                   label_width, label_height, dpi)
+                                        
+                                        st.session_state[f'zpl_content_{label_type}'] = zpl_content
+                                        st.session_state[f'zpl_filename_{label_type}'] = filename
+                                        st.success(f"Generated {len(labels)} labels")
+                            except Exception as e:
+                                st.error(f"Error during generation: {str(e)}")
+                        
+                        if st.button("👀 Preview Sample ZPL", use_container_width=True):
+                            try:
+                                if len(display_data) > 0:
+                                    sample_row = display_data.iloc[0]
+                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, 
+                                                                              label_width, label_height, dpi)
+                                    
+                                    if sample_labels:
+                                        st.code(sample_labels[0], language="text")
+                                        if len(sample_labels) > 1:
+                                            st.info(f"This product generates {len(sample_labels)} labels")
+                                    else:
+                                        st.warning("No labels generated for the first product")
+                            except Exception as e:
+                                st.error(f"Error generating preview: {str(e)}")
+                    
+                    with col2:
+                        zpl_key = f'zpl_content_{label_type}'
+                        filename_key = f'zpl_filename_{label_type}'
+                        
+                        if zpl_key in st.session_state and st.session_state[zpl_key]:
+                            st.download_button(
+                                label=f"💾 Download {label_type} ZPL",
+                                data=st.session_state[zpl_key],
+                                file_name=st.session_state[filename_key],
+                                mime="text/plain",
+                                use_container_width=True
+                            )
+                        else:
+                            st.button(f"💾 Download {label_type} ZPL", disabled=True, use_container_width=True)
+                            st.info("Generate labels first")
+                
+                elif print_via == "Browser Print (Cloud)":
                     if st.button(f"🖨️ Generate {int(total_labels)} Labels for Browser Print", 
                                type="primary", use_container_width=True):
                         try:
@@ -1024,61 +1088,6 @@ if st.session_state.processed_data is not None:
                                         st.warning("No labels generated for the first product")
                             except Exception as e:
                                 st.error(f"Error generating preview: {str(e)}")
-                
-                else:  # Download ZPL
-                    col1, col2 = st.columns([1, 1])
-                    
-                    with col1:
-                        if st.button(f"📥 Generate {int(total_labels)} Labels", type="primary", use_container_width=True):
-                            try:
-                                with st.spinner("Generating ZPL..."):
-                                    labels = generate_labels_for_dataset(display_data, label_type, 
-                                                                       label_width, label_height, dpi)
-                                    
-                                    if not labels:
-                                        st.error("No labels were generated")
-                                    else:
-                                        zpl_content = "\n".join(labels)
-                                        filename = generate_filename(display_data, label_type, 
-                                                                   label_width, label_height, dpi)
-                                        
-                                        st.session_state[f'zpl_content_{label_type}'] = zpl_content
-                                        st.session_state[f'zpl_filename_{label_type}'] = filename
-                                        st.success(f"Generated {len(labels)} labels")
-                            except Exception as e:
-                                st.error(f"Error during generation: {str(e)}")
-                        
-                        if st.button("👀 Preview Sample ZPL", use_container_width=True):
-                            try:
-                                if len(display_data) > 0:
-                                    sample_row = display_data.iloc[0]
-                                    sample_labels = generate_all_labels_for_row(sample_row, label_type, 
-                                                                              label_width, label_height, dpi)
-                                    
-                                    if sample_labels:
-                                        st.code(sample_labels[0], language="text")
-                                        if len(sample_labels) > 1:
-                                            st.info(f"This product generates {len(sample_labels)} labels")
-                                    else:
-                                        st.warning("No labels generated for the first product")
-                            except Exception as e:
-                                st.error(f"Error generating preview: {str(e)}")
-                    
-                    with col2:
-                        zpl_key = f'zpl_content_{label_type}'
-                        filename_key = f'zpl_filename_{label_type}'
-                        
-                        if zpl_key in st.session_state and st.session_state[zpl_key]:
-                            st.download_button(
-                                label=f"💾 Download {label_type} ZPL",
-                                data=st.session_state[zpl_key],
-                                file_name=st.session_state[filename_key],
-                                mime="text/plain",
-                                use_container_width=True
-                            )
-                        else:
-                            st.button(f"💾 Download {label_type} ZPL", disabled=True, use_container_width=True)
-                            st.info("Generate labels first")
             
             else:
                 st.warning(f"No {label_type.lower()} labels needed for selected data")
