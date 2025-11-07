@@ -2,10 +2,11 @@
 DC Retail Case & Bin Label Generator - Cloud-Safe Version
 ========================================================
 
-Version 2.4.0 - Optimized for Streamlit Cloud deployment
+Version 2.5.0 - Optimized for Streamlit Cloud deployment
 - Fixes CSP issues with Browser Print integration
 - Default to Bin labels, Download ZPL, and 4" × 2" size
 - Labels grouped by Invoice, then sorted A-Z by Product Name
+- Added 2.625" × 1" label size option for ZD621
 
 Author: DC Retail
 """
@@ -22,7 +23,7 @@ import json
 import base64
 
 # Version
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 
 # Import QR code libraries with error handling
 try:
@@ -911,14 +912,23 @@ if st.session_state.processed_data is not None:
                 )
             
             with col3:
-                label_size_options = ["4\" × 2\" (203 DPI)", "1.75\" × 0.875\" (300 DPI)"]  # 4" × 2" is now first (default)
+                label_size_options = [
+                    "4\" × 2\" (203 DPI)",
+                    "2.625\" × 1\" (203 DPI)",  # NEW SIZE OPTION
+                    "1.75\" × 0.875\" (300 DPI)"
+                ]
                 selected_size = st.selectbox("Label Size", label_size_options)
                 
+                # Parse selected size
                 if "4\" × 2\"" in selected_size:
                     label_width = 4.0
                     label_height = 2.0
                     dpi = 203
-                else:
+                elif "2.625\" × 1\"" in selected_size:
+                    label_width = 2.625
+                    label_height = 1.0
+                    dpi = 203
+                else:  # 1.75" × 0.875"
                     label_width = 1.75
                     label_height = 0.875
                     dpi = 300
@@ -1145,20 +1155,28 @@ else:
             **Key Features:**
             - Links Sales Orders with Products and Packages
             - Calculates Case/Bin Labels automatically with partial quantity support
-            - Multiple label sizes: 1.75" × 0.875" (300 DPI) and 4" × 2" (203 DPI)
+            - Multiple label sizes: 
+                - 4" × 2" at 203 DPI (ZD621 - large labels)
+                - **2.625" × 1" at 203 DPI (ZD621 - medium labels)**
+                - 1.75" × 0.875" at 300 DPI (ZD410 - small labels)
             - **NEW: Browser Print support for cloud printing!**
             - Direct Zebra printer support or ZPL download
             - Smart file naming with label specs, customer, invoice, and order info
             
             **Printing Options:**
+            - **Download ZPL:** Save files for manual printing or batch processing (default)
             - **Browser Print (Cloud):** Print directly from your browser to local Zebra printers
             - **Network Printer (Local):** Direct IP connection when running locally
-            - **Download ZPL:** Save files for manual printing or batch processing
             
             **Label Size Support:**
             - Small labels: 1.75" × 0.875" at 300 DPI (ZD410)
+            - **Medium labels: 2.625" × 1" at 203 DPI (ZD621)**
             - Large labels: 4" × 2" at 203 DPI (ZD621)
             - Automatic proportional scaling maintains layout consistency
+            
+            **Sorting:**
+            - Labels are grouped by Invoice Number
+            - Within each invoice, products are sorted A-Z alphabetically
             """)
     
     elif sales_order_file and products_file and packages_file:
