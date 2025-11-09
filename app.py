@@ -2,7 +2,7 @@
 DC Retail Case & Bin Label Generator - Cloud-Safe Version
 ========================================================
 
-Version 2.6.3 - Optimized for Streamlit Cloud deployment
+Version 2.8.2 - Optimized for Streamlit Cloud deployment
 - Fixes CSP issues with Browser Print integration
 - Default to Bin labels, Download ZPL, and 4" × 2" size
 - Labels grouped by Invoice, then sorted A-Z by Product Name
@@ -10,8 +10,9 @@ Version 2.6.3 - Optimized for Streamlit Cloud deployment
 - Brand/Product split using first hyphen
 - Brand displayed with inverted colors (white on black)
 - Category right-aligned on brand bar
-- Narrower box for quantities with smaller Pkg Qty font
-- Fixed text positioning within quantity box
+- Quantities bold and centered (no box)
+- Product name wraps to 2 lines if needed
+- ADAPTIVE spacing - more space on smaller labels
 
 Author: DC Retail
 """
@@ -28,7 +29,7 @@ import json
 import base64
 
 # Version
-VERSION = "2.6.3"
+VERSION = "2.8.2"
 
 # Import QR code libraries with error handling
 try:
@@ -470,21 +471,25 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
     # Line spacing
     line_spacing = int(38 * scale_y)  # Space between lines
     
-    # Vertical positions - ADJUSTED for new layout
+    # Vertical positions - ADJUSTED for new layout without box
     # Brand bar at top, Product below, Batch below that
     brand_bar_y = int(height_dots * 0.02)  # Start black bar very close to top
     brand_bar_height = int(height_dots * 0.12)  # Height of black bar
     product_y = int(height_dots * 0.17)  # Product below black bar with gap
-    batch_y = int(height_dots * 0.27)  # Batch below product
+    batch_y = int(height_dots * 0.32)  # Batch below product (adjusted for potential wrap)
     
-    # Center positions for quantity box
-    qty_box_y = int(height_dots * 0.38)  # Start of qty box
-    qty_box_height = int(height_dots * 0.16)  # Height of qty box (reduced from 0.18)
-    
-    # Positions within the box - adjusted for better spacing
-    bin_qty_y = qty_box_y + int(qty_box_height * 0.25)  # Bin Qty in upper half (adjusted)
-    separator_y = qty_box_y + int(qty_box_height * 0.5)  # Middle line
-    pkg_qty_y = qty_box_y + int(qty_box_height * 0.68)  # Pkg Qty in lower half (adjusted)
+    # Center positions for quantities - adaptive spacing based on label size
+    # Smaller labels need more relative spacing
+    if label_height <= 1.0:  # For 2.625" × 1" and smaller labels
+        bin_qty_y = int(height_dots * 0.40)  # Move up slightly
+        pkg_qty_y = int(height_dots * 0.54)  # Bigger gap (14% vs 10%)
+        delivered_y = int(height_dots * 0.66)
+        sell_by_y = int(height_dots * 0.76)
+    else:  # For 4" × 2" labels
+        bin_qty_y = int(height_dots * 0.42)  # Original position
+        pkg_qty_y = int(height_dots * 0.52)  # Original gap (10%)
+        delivered_y = int(height_dots * 0.64)
+        sell_by_y = int(height_dots * 0.74)
     
     delivered_y = int(height_dots * 0.65)
     sell_by_y = int(height_dots * 0.75)
@@ -527,9 +532,32 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
     if len(brand) > max_chars_brand:
         brand = brand[:max_chars_brand-3] + "..."
     
-    # Truncate product if too long (single line only now)
+    # Handle product name wrapping - allow 2 lines
+    product_lines = []
     if len(product) > max_chars_product:
-        product = product[:max_chars_product-3] + "..."
+        # Need to wrap
+        words = product.split()
+        current_line = ""
+        
+        for word in words:
+            test_line = (current_line + " " + word).strip() if current_line else word
+            if len(test_line) <= max_chars_product:
+                current_line = test_line
+            else:
+                if current_line:
+                    product_lines.append(current_line)
+                current_line = word
+        
+        if current_line:
+            product_lines.append(current_line)
+        
+        # Limit to 2 lines max
+        if len(product_lines) > 2:
+            product_lines = product_lines[:2]
+            if len(product_lines[1]) > max_chars_product - 3:
+                product_lines[1] = product_lines[1][:max_chars_product-3] + "..."
+    else:
+        product_lines = [product]
     
     # Format dates
     try:
@@ -594,53 +622,47 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
         zpl_lines.append(f"^CF0,{fonts['medium']}")
         zpl_lines.append(f"^FO{category_x},{category_text_y}^FR^FD{category_text}^FS")
     
-    # Product name - below brand bar in normal black text
+    # Product name - below brand bar in normal black text (with wrapping)
     zpl_lines.append(f"^CF0,{fonts['large']}")
-    zpl_lines.append(f"^FO{left_margin},{product_y}^FD{product}^FS")
+    current_y = product_y
+    for line in product_lines:
+        zpl_lines.append(f"^FO{left_margin},{current_y}^FD{line}^FS")
+        current_y += int(line_spacing * 0.8)  # Slightly tighter spacing for product lines
     
-    # Batch - positioned below product name
+    # Batch - positioned below product name (dynamically based on wrapped lines)
+    batch_y = current_y + int(10 * scale_y)  # Small gap after product
     zpl_lines.extend([
         f"^CF0,{fonts['medium']}",
         f"^FO{left_margin},{batch_y}^FDBatch: {batch_no}^FS"
     ])
     
-    # QUANTITY BOX - Draw box around quantities
-    # Calculate box dimensions - NARROWER box
-    box_width = int(width_dots * 0.28)  # Box takes only 28% of label width (was 45%)
-    box_x = int((width_dots - box_width) / 2)  # Center the box horizontally
-    
-    # Draw outer box (border thickness 2)
-    zpl_lines.append(f"^FO{box_x},{qty_box_y}^GB{box_width},{qty_box_height},2^FS")
-    
-    # Draw horizontal separator line in middle of box
-    zpl_lines.append(f"^FO{box_x},{separator_y}^GB{box_width},2,2^FS")
-    
-    # BIN/CASE QUANTITY - in upper half of box
+    # QUANTITIES - NO BOX, JUST BOLD/EMPHASIZED TEXT CENTERED
+    # BIN/CASE QUANTITY - make it prominent
     if qty == int(qty):
         qty_display = f"{label_type} Qty: {int(qty)}"
     else:
         qty_display = f"{label_type} Qty: {qty:.1f}"
     
-    # Center the text horizontally within the box
-    qty_text_width = len(qty_display) * int(fonts['large_plus'] * 0.5)
-    qty_text_x = box_x + int((box_width - qty_text_width) / 2)
+    # Center the text horizontally
+    qty_text_width = len(qty_display) * int(fonts['extra_large'] * 0.5)
+    qty_x = int((width_dots - qty_text_width) / 2)
     
+    # Use extra large bold font for emphasis
     zpl_lines.extend([
-        f"^CF0,{fonts['large_plus']}",
-        f"^FO{qty_text_x},{bin_qty_y}^FD{qty_display}^FS"
+        f"^CF0,{fonts['extra_large']}",
+        f"^FO{qty_x},{bin_qty_y}^FD{qty_display}^FS"
     ])
     
-    # PACKAGE QUANTITY - in lower half of box with SMALLER font
+    # PACKAGE QUANTITY - smaller font, also centered
     if pkg_qty:
         pkg_display = f"Pkg Qty: {pkg_qty}"
-        # Use smaller font for package quantity
-        pkg_font_size = fonts['medium']  # Changed from 'large_plus' to 'medium'
+        pkg_font_size = fonts['large_plus']  # Smaller than bin qty but still visible
         pkg_text_width = len(pkg_display) * int(pkg_font_size * 0.5)
-        pkg_text_x = box_x + int((box_width - pkg_text_width) / 2)
+        pkg_x = int((width_dots - pkg_text_width) / 2)
         
         zpl_lines.extend([
             f"^CF0,{pkg_font_size}",
-            f"^FO{pkg_text_x},{pkg_qty_y}^FD{pkg_display}^FS"
+            f"^FO{pkg_x},{pkg_qty_y}^FD{pkg_display}^FS"
         ])
     
     # Delivered - fixed position
