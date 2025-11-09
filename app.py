@@ -2,14 +2,16 @@
 DC Retail Case & Bin Label Generator - Cloud-Safe Version
 ========================================================
 
-Version 2.5.5 - Optimized for Streamlit Cloud deployment
+Version 2.6.3 - Optimized for Streamlit Cloud deployment
 - Fixes CSP issues with Browser Print integration
 - Default to Bin labels, Download ZPL, and 4" × 2" size
 - Labels grouped by Invoice, then sorted A-Z by Product Name
 - Added 2.625" × 1" label size option for ZD621
-- Product name and bottom line both use FULL label width
-- QR code positioned in middle-right (doesn't block text lines)
-- Batch dynamically positioned below product with wrapping support
+- Brand/Product split using first hyphen
+- Brand displayed with inverted colors (white on black)
+- Category right-aligned on brand bar
+- Narrower box for quantities with smaller Pkg Qty font
+- Fixed text positioning within quantity box
 
 Author: DC Retail
 """
@@ -26,7 +28,7 @@ import json
 import base64
 
 # Version
-VERSION = "2.5.5"
+VERSION = "2.6.3"
 
 # Import QR code libraries with error handling
 try:
@@ -267,11 +269,6 @@ def calculate_individual_quantities(package_qty: float, container_qty: float) ->
     
     return quantities
 
-# [Rest of the utility functions remain the same...]
-# [File loading functions remain the same...]
-# [Data processing functions remain the same...]
-# [Label generation functions remain the same...]
-
 def load_sales_order_csv(uploaded_file) -> Optional[pd.DataFrame]:
     """Load Sales Order CSV with special handling for metadata lines."""
     try:
@@ -446,7 +443,7 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
                       label_type: str = "Case",
                       label_width: float = 1.75, label_height: float = 0.875, 
                       dpi: int = 300) -> str:
-    """Generate ZPL code for Zebra printer labels with proper scaling for all sizes."""
+    """Generate ZPL code for Zebra printer labels with brand extraction and inverted display."""
     width_dots = int(label_width * dpi)
     height_dots = int(label_height * dpi)
     
@@ -470,14 +467,27 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
     left_margin = int(20 * scale_x)  # Reduced margin to use more space
     right_margin = int(20 * scale_x)
     
-    # Line spacing for wrapping
-    line_spacing = int(38 * scale_y)  # Space between wrapped lines
+    # Line spacing
+    line_spacing = int(38 * scale_y)  # Space between lines
     
-    # Vertical positions as percentages (for fixed elements)
-    quantity_y = int(height_dots * 0.35)
-    category_y = int(height_dots * 0.48)
-    delivered_y = int(height_dots * 0.61)
-    sell_by_y = int(height_dots * 0.73)
+    # Vertical positions - ADJUSTED for new layout
+    # Brand bar at top, Product below, Batch below that
+    brand_bar_y = int(height_dots * 0.02)  # Start black bar very close to top
+    brand_bar_height = int(height_dots * 0.12)  # Height of black bar
+    product_y = int(height_dots * 0.17)  # Product below black bar with gap
+    batch_y = int(height_dots * 0.27)  # Batch below product
+    
+    # Center positions for quantity box
+    qty_box_y = int(height_dots * 0.38)  # Start of qty box
+    qty_box_height = int(height_dots * 0.16)  # Height of qty box (reduced from 0.18)
+    
+    # Positions within the box - adjusted for better spacing
+    bin_qty_y = qty_box_y + int(qty_box_height * 0.25)  # Bin Qty in upper half (adjusted)
+    separator_y = qty_box_y + int(qty_box_height * 0.5)  # Middle line
+    pkg_qty_y = qty_box_y + int(qty_box_height * 0.68)  # Pkg Qty in lower half (adjusted)
+    
+    delivered_y = int(height_dots * 0.65)
+    sell_by_y = int(height_dots * 0.75)
     
     qr_data = sanitize_qr_data(package_label)
     
@@ -488,44 +498,38 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
     # Position QR in right side, middle height area
     qr_right_margin = int(15 * scale_x)
     qr_x = width_dots - qr_box_size - qr_right_margin
-    qr_y = int(height_dots * 0.25)  # QR starts at 25% from top - perfect position
+    qr_y = int(height_dots * 0.30)  # Adjusted QR position
     
-    # Calculate available width for ALL text - FULL WIDTH since QR is in middle
-    # Product name and bottom line both use full width
+    # Calculate available width for text
     text_available_width = width_dots - left_margin - right_margin
     
     # Calculate characters that fit based on font and available width
-    # Better calculation: approximately 2 dots per character at the given font size
+    max_chars_brand = int(text_available_width / (fonts['large'] * 0.45))
     max_chars_product = int(text_available_width / (fonts['large'] * 0.45))
     
-    # Handle product name - allow wrapping using FULL WIDTH
-    product_name = str(product_name) if pd.notna(product_name) else ""
-    product_lines = []
+    # EXTRACT BRAND AND PRODUCT from product_name using FIRST hyphen only
+    product_name_str = str(product_name) if pd.notna(product_name) else ""
+    brand = ""
+    product = product_name_str  # Default to full name if no hyphen
     
-    if len(product_name) > max_chars_product:
-        # Need to wrap
-        words = product_name.split()
-        current_line = ""
-        
-        for word in words:
-            test_line = (current_line + " " + word).strip() if current_line else word
-            if len(test_line) <= max_chars_product:
-                current_line = test_line
-            else:
-                if current_line:
-                    product_lines.append(current_line)
-                current_line = word
-        
-        if current_line:
-            product_lines.append(current_line)
-        
-        # Limit to 2 lines max
-        if len(product_lines) > 2:
-            product_lines = product_lines[:2]
-            if len(product_lines[1]) > max_chars_product - 3:
-                product_lines[1] = product_lines[1][:max_chars_product-3] + "..."
-    else:
-        product_lines = [product_name]
+    if ' - ' in product_name_str:
+        # Split ONLY on the FIRST hyphen
+        parts = product_name_str.split(' - ', 1)  # maxsplit=1 ensures only first hyphen is used
+        brand = parts[0].strip()
+        product = parts[1].strip()  # This may contain additional hyphens, which is fine
+    elif '-' in product_name_str:
+        # Handle case without spaces around hyphen
+        parts = product_name_str.split('-', 1)  # maxsplit=1 ensures only first hyphen is used
+        brand = parts[0].strip()
+        product = parts[1].strip()
+    
+    # Truncate brand if too long
+    if len(brand) > max_chars_brand:
+        brand = brand[:max_chars_brand-3] + "..."
+    
+    # Truncate product if too long (single line only now)
+    if len(product) > max_chars_product:
+        product = product[:max_chars_product-3] + "..."
     
     # Format dates
     try:
@@ -564,42 +568,79 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
         combined_text = combined_text[:max_chars_bottom-3] + "..."
     
     # Build ZPL
-    zpl_lines = ["^XA", f"^CF0,{fonts['large']}"]
+    zpl_lines = ["^XA"]
     
-    # Product name - dynamic position at top with wrapping support using FULL WIDTH
-    product_y = int(height_dots * 0.06)  # Start 6% from top
-    current_y = product_y
+    # INVERTED BRAND BAR - white text on black background
+    # Draw black rectangle for brand background (full width)
+    zpl_lines.append(f"^FO0,{brand_bar_y}^GB{width_dots},{brand_bar_height},{brand_bar_height}^FS")
     
-    for line in product_lines:
-        zpl_lines.append(f"^FO{left_margin},{current_y}^FD{line}^FS")
-        current_y += line_spacing
+    # Calculate vertical center of text within black bar
+    brand_text_y = brand_bar_y + int((brand_bar_height - fonts['large']) / 2)
     
-    # Batch - DYNAMICALLY positioned below product name with proper spacing
-    batch_gap = int(15 * scale_y)  # Small gap between product and batch
-    batch_y = current_y + batch_gap
+    # White text for brand (using reverse field)
+    zpl_lines.append("^FR")  # Start field reverse
+    zpl_lines.append(f"^CF0,{fonts['large']}")
+    zpl_lines.append(f"^FO{left_margin},{brand_text_y}^FR^FD{brand}^FS")
     
+    # CATEGORY - right aligned on same row as brand (also white on black)
+    category_text = str(category) if pd.notna(category) else ""
+    if category_text:
+        # Calculate position for right-aligned text
+        # Estimate text width (rough approximation)
+        category_width = len(category_text) * int(fonts['medium'] * 0.5)
+        category_x = width_dots - right_margin - category_width
+        category_text_y = brand_bar_y + int((brand_bar_height - fonts['medium']) / 2)
+        
+        zpl_lines.append(f"^CF0,{fonts['medium']}")
+        zpl_lines.append(f"^FO{category_x},{category_text_y}^FR^FD{category_text}^FS")
+    
+    # Product name - below brand bar in normal black text
+    zpl_lines.append(f"^CF0,{fonts['large']}")
+    zpl_lines.append(f"^FO{left_margin},{product_y}^FD{product}^FS")
+    
+    # Batch - positioned below product name
     zpl_lines.extend([
         f"^CF0,{fonts['medium']}",
         f"^FO{left_margin},{batch_y}^FDBatch: {batch_no}^FS"
     ])
     
-    # Quantity - fixed position
+    # QUANTITY BOX - Draw box around quantities
+    # Calculate box dimensions - NARROWER box
+    box_width = int(width_dots * 0.28)  # Box takes only 28% of label width (was 45%)
+    box_x = int((width_dots - box_width) / 2)  # Center the box horizontally
+    
+    # Draw outer box (border thickness 2)
+    zpl_lines.append(f"^FO{box_x},{qty_box_y}^GB{box_width},{qty_box_height},2^FS")
+    
+    # Draw horizontal separator line in middle of box
+    zpl_lines.append(f"^FO{box_x},{separator_y}^GB{box_width},2,2^FS")
+    
+    # BIN/CASE QUANTITY - in upper half of box
     if qty == int(qty):
         qty_display = f"{label_type} Qty: {int(qty)}"
     else:
         qty_display = f"{label_type} Qty: {qty:.1f}"
-        
+    
+    # Center the text horizontally within the box
+    qty_text_width = len(qty_display) * int(fonts['large_plus'] * 0.5)
+    qty_text_x = box_x + int((box_width - qty_text_width) / 2)
+    
     zpl_lines.extend([
-        f"^CF0,{fonts['extra_large']}",
-        f"^FO{left_margin},{quantity_y}^FD{qty_display}^FS"
+        f"^CF0,{fonts['large_plus']}",
+        f"^FO{qty_text_x},{bin_qty_y}^FD{qty_display}^FS"
     ])
     
-    # Category - fixed position
-    category_text = str(category) if pd.notna(category) else ""
-    if category_text:
+    # PACKAGE QUANTITY - in lower half of box with SMALLER font
+    if pkg_qty:
+        pkg_display = f"Pkg Qty: {pkg_qty}"
+        # Use smaller font for package quantity
+        pkg_font_size = fonts['medium']  # Changed from 'large_plus' to 'medium'
+        pkg_text_width = len(pkg_display) * int(pkg_font_size * 0.5)
+        pkg_text_x = box_x + int((box_width - pkg_text_width) / 2)
+        
         zpl_lines.extend([
-            f"^CF0,{fonts['large']}",
-            f"^FO{left_margin},{category_y}^FD{category_text}^FS"
+            f"^CF0,{pkg_font_size}",
+            f"^FO{pkg_text_x},{pkg_qty_y}^FD{pkg_display}^FS"
         ])
     
     # Delivered - fixed position
@@ -608,25 +649,11 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
         f"^FO{left_margin},{delivered_y}^FDDelivered: {formatted_date}^FS"
     ])
     
-    # Sell by + Pkg Qty on same line
-    sell_by_line = ""
+    # Sell by on its own line
     if sell_by_formatted:
-        sell_by_line = f"Sell By: {sell_by_formatted}"
-    
-    if pkg_qty:
-        if sell_by_line:
-            combined_sell_pkg = f"{sell_by_line} | Pkg Qty: {pkg_qty}"
-        else:
-            combined_sell_pkg = f"Pkg Qty: {pkg_qty}"
-        
         zpl_lines.extend([
             f"^CF0,{fonts['large_plus']}",
-            f"^FO{left_margin},{sell_by_y}^FD{combined_sell_pkg}^FS"
-        ])
-    elif sell_by_line:
-        zpl_lines.extend([
-            f"^CF0,{fonts['large_plus']}",
-            f"^FO{left_margin},{sell_by_y}^FD{sell_by_line}^FS"
+            f"^FO{left_margin},{sell_by_y}^FDSell By: {sell_by_formatted}^FS"
         ])
     
     # QR code - positioned in middle right (doesn't interfere with top or bottom text)
@@ -1186,26 +1213,28 @@ else:
         with st.expander("ℹ️ How it Works", expanded=True):
             st.markdown("""
             **Key Features:**
+            - **NEW: Brand/Product Extraction** - Automatically splits product names at first hyphen
+            - **NEW: Inverted Brand Display** - Brand shown with white text on black background
             - Links Sales Orders with Products and Packages
             - Calculates Case/Bin Labels automatically with partial quantity support
             - Multiple label sizes: 
                 - 4" × 2" at 203 DPI (ZD621 - large labels)
-                - **2.625" × 1" at 203 DPI (ZD621 - medium labels)**
+                - 2.625" × 1" at 203 DPI (ZD621 - medium labels)
                 - 1.75" × 0.875" at 300 DPI (ZD410 - small labels)
-            - **NEW: Browser Print support for cloud printing!**
+            - Browser Print support for cloud printing
             - Direct Zebra printer support or ZPL download
             - Smart file naming with label specs, customer, invoice, and order info
+            
+            **Brand/Product Format:**
+            - Products like "Camino - Strawberry Sunset Sours Gummies 100mg"
+            - Become: Brand = "Camino", Product = "Strawberry Sunset Sours Gummies 100mg"
+            - Only the FIRST hyphen is used as separator
+            - Brand displays with inverted colors (white on black)
             
             **Printing Options:**
             - **Download ZPL:** Save files for manual printing or batch processing (default)
             - **Browser Print (Cloud):** Print directly from your browser to local Zebra printers
             - **Network Printer (Local):** Direct IP connection when running locally
-            
-            **Label Size Support:**
-            - Small labels: 1.75" × 0.875" at 300 DPI (ZD410)
-            - **Medium labels: 2.625" × 1" at 203 DPI (ZD621)**
-            - Large labels: 4" × 2" at 203 DPI (ZD621)
-            - Automatic proportional scaling maintains layout consistency
             
             **Sorting:**
             - Labels are grouped by Invoice Number
