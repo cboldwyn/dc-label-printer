@@ -2,7 +2,7 @@
 DC Retail Case & Bin Label Generator - Cloud-Safe Version
 ========================================================
 
-Version 2.8.2 - Optimized for Streamlit Cloud deployment
+Version 2.9.1 - Optimized for Streamlit Cloud deployment
 - Fixes CSP issues with Browser Print integration
 - Default to Bin labels, Download ZPL, and 4" × 2" size
 - Labels grouped by Invoice, then sorted A-Z by Product Name
@@ -12,7 +12,8 @@ Version 2.8.2 - Optimized for Streamlit Cloud deployment
 - Category right-aligned on brand bar
 - Quantities bold and centered (no box)
 - Product name wraps to 2 lines if needed
-- ADAPTIVE spacing - more space on smaller labels
+- Adaptive spacing for different label sizes
+- "2 per Item" uses Case Qty values but prints exactly 2 labels
 
 Author: DC Retail
 """
@@ -29,7 +30,7 @@ import json
 import base64
 
 # Version
-VERSION = "2.8.2"
+VERSION = "2.9.1"
 
 # Import QR code libraries with error handling
 try:
@@ -693,9 +694,45 @@ def generate_label_zpl(product_name: str, batch_no: str, qty: float,
     zpl_lines.append("^XZ")
     return "\n".join(zpl_lines)
 
+def generate_two_labels_for_row(row: pd.Series, 
+                               label_width: float, label_height: float, dpi: int) -> List[str]:
+    """Generate exactly 2 labels for a single row using Case quantities but ignoring quantity calculations."""
+    labels = []
+    
+    # Use Case quantity values for display
+    case_qty = safe_numeric(row.get('Case Quantity', 0))
+    pkg_qty = row.get('Package Quantity', '')
+    
+    # Always generate exactly 2 labels regardless of quantities
+    for i in range(2):
+        zpl = generate_label_zpl(
+            product_name=row.get('Product Name', ''),
+            batch_no=row.get('Batch No', ''),
+            qty=case_qty,  # Use the actual Case Quantity for display
+            pkg_qty=pkg_qty,  # Use actual Package Quantity
+            date_str=row.get('Delivery Date', ''),
+            package_label=row.get('Package Label', ''),
+            sell_by=row.get('Sell by', ''),
+            invoice_no=row.get('Invoice No', ''),
+            metrc_manifest=row.get('METRC Manifest', ''),
+            category=row.get('Category', ''),
+            label_type="Case",  # Use "Case" so it displays "Case Qty: X"
+            label_width=label_width,
+            label_height=label_height,
+            dpi=dpi
+        )
+        labels.append(zpl)
+    
+    return labels
+
 def generate_all_labels_for_row(row: pd.Series, label_type: str, 
                                label_width: float, label_height: float, dpi: int) -> List[str]:
     """Generate all labels needed for a single row."""
+    # Handle "2 per Item" option
+    if label_type == "2 per Item":
+        return generate_two_labels_for_row(row, label_width, label_height, dpi)
+    
+    # Original logic for Case and Bin labels
     labels = []
     
     package_qty = safe_numeric(row.get('Package Quantity', 0))
@@ -982,7 +1019,7 @@ if st.session_state.processed_data is not None:
             with col1:
                 label_type = st.selectbox(
                     "Label Type", 
-                    ["Bin", "Case"],  # Bin is now first (default)
+                    ["Bin", "Case", "2 per Item"],  # Added new option
                     help="Choose which type of labels to generate"
                 )
             
@@ -1020,8 +1057,10 @@ if st.session_state.processed_data is not None:
             # Calculate labels
             if label_type == "Case":
                 total_labels = safe_sum(display_data['Case Labels Needed'])
-            else:
+            elif label_type == "Bin":
                 total_labels = safe_sum(display_data['Bin Labels Needed'])
+            else:  # "2 per Item"
+                total_labels = len(display_data) * 2
             
             if total_labels > 0:
                 st.markdown("---")
