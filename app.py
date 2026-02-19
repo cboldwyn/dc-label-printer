@@ -2,7 +2,7 @@
 DC Retail Case & Bin Label Generator - Cloud-Safe Version
 ========================================================
 
-Version 2.9.1 - Optimized for Streamlit Cloud deployment
+Version 2.9.4 - Optimized for Streamlit Cloud deployment
 - Fixes CSP issues with Browser Print integration
 - Default to Bin labels, Download ZPL, and 4" × 2" size
 - Labels grouped by Invoice, then sorted A-Z by Product Name
@@ -14,6 +14,7 @@ Version 2.9.1 - Optimized for Streamlit Cloud deployment
 - Product name wraps to 2 lines if needed
 - Adaptive spacing for different label sizes
 - "2 per Item" uses Case Qty values but prints exactly 2 labels
+- FIXED: Both Case and Bin Labels Needed default to 1 when quantities are blank
 
 Author: DC Retail
 """
@@ -30,7 +31,7 @@ import json
 import base64
 
 # Version
-VERSION = "2.9.1"
+VERSION = "2.9.4"
 
 # Import QR code libraries with error handling
 try:
@@ -327,10 +328,11 @@ def calculate_labels_needed(df: pd.DataFrame) -> pd.DataFrame:
                 else:
                     case_labels.append(math.ceil(pkg_qty / case_qty))
             else:
-                case_labels.append(0)
+                # Default to 1 label when Case Quantity is blank or 0
+                case_labels.append(1)
         df['Case Labels Needed'] = case_labels
     else:
-        df['Case Labels Needed'] = 0
+        df['Case Labels Needed'] = 1  # Default to 1 when columns don't exist
     
     if 'Package Quantity' in df.columns and 'Bin Quantity' in df.columns:
         bin_labels = []
@@ -344,10 +346,11 @@ def calculate_labels_needed(df: pd.DataFrame) -> pd.DataFrame:
                 else:
                     bin_labels.append(math.ceil(pkg_qty / bin_qty))
             else:
-                bin_labels.append(0)
+                # Default to 1 label when Bin Quantity is blank or 0
+                bin_labels.append(1)
         df['Bin Labels Needed'] = bin_labels
     else:
-        df['Bin Labels Needed'] = 0
+        df['Bin Labels Needed'] = 1  # Default to 1 when columns don't exist
     
     return df
 
